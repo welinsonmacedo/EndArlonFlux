@@ -35,5 +35,4 @@ export declare class OrdersService {
     updateItemStatus(tenantId: string, itemId: string, status: string): Promise<{
         success: boolean;
     }>;
-    private validateItems;
 }

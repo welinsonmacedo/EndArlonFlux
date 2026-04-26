@@ -10,11 +10,10 @@ export class OrdersService {
   constructor(private readonly prisma: PrismaService) {}
 
   // ==========================================
-  // PDV SALE (Venda Direta - Lógica SQL Supabase)
+  // PDV SALE (Venda Direta de Balcão)
   // ==========================================
   async processPosSale(tenantId: string, data: any) {
-    // Mapeamento para os nomes que a sua função SQL e o Front usam
-    const { p_customer_name, p_method, p_items, p_cashier_name } = data;
+    const { p_customer_name, p_method, p_items, p_cashier_name, p_cash_session_id } = data;
     const items = p_items || data.items || [];
 
     if (items.length === 0) {
@@ -36,10 +35,8 @@ export class OrdersService {
           let v_product_type = 'KITCHEN';
           let v_product_price = 0;
           let v_cost_price = 0;
-          let v_final_product_id = v_product_id;
           let v_final_inventory_id = v_inventory_item_id;
 
-          // 1. Lógica de Busca Hierárquica (Igual ao seu SQL)
           if (v_product_id) {
             const product = await tx.products.findFirst({
               where: { id: v_product_id, tenant_id: tenantId },
@@ -53,7 +50,6 @@ export class OrdersService {
             }
           } 
           
-          // Se não achou por produto, tenta por item de inventário
           if (v_product_name === 'Produto Desconhecido' && v_final_inventory_id) {
             const invItem = await tx.inventory_items.findFirst({
               where: { id: v_final_inventory_id, tenant_id: tenantId },
@@ -66,15 +62,11 @@ export class OrdersService {
             }
           }
 
-          if (v_product_name === 'Produto Desconhecido' && !v_product_id && !v_inventory_item_id) {
-             throw new BadRequestException('Item sem identificação válida.');
-          }
-
           const v_total_price = v_product_price * v_quantity;
           v_total_amount += v_total_price;
 
           processedItems.push({
-            v_final_product_id,
+            v_product_id,
             v_final_inventory_id,
             v_quantity,
             v_notes,
@@ -86,7 +78,6 @@ export class OrdersService {
           });
         }
 
-        // 2. Criar Pedido
         const order = await tx.orders.create({
           data: {
             tenant_id: tenantId,
@@ -98,7 +89,6 @@ export class OrdersService {
           },
         });
 
-        // 3. Criar Itens e Baixar Estoque
         for (const pi of processedItems) {
           if (pi.v_final_inventory_id) {
             await tx.inventory_items.update({
@@ -111,7 +101,7 @@ export class OrdersService {
             data: {
               tenant_id: tenantId,
               order_id: order.id,
-              product_id: pi.v_final_product_id,
+              product_id: pi.v_product_id,
               inventory_item_id: pi.v_final_inventory_id,
               quantity: pi.v_quantity,
               notes: pi.v_notes,
@@ -126,16 +116,18 @@ export class OrdersService {
           });
         }
 
-        // 4. Registrar Transação Financeira
         await tx.transactions.create({
           data: {
             tenant_id: tenantId,
             order_id: order.id,
+            cash_session_id: p_cash_session_id || data.cashSessionId || null,
             amount: v_total_amount,
             method: p_method || 'DINHEIRO',
             items_summary: 'Venda Balcão (PDV)',
             status: 'COMPLETED',
             cashier_name: p_cashier_name || 'Sistema',
+            type: 'INCOME',
+            category: 'SALE'
           } as any,
         });
 
@@ -152,8 +144,6 @@ export class OrdersService {
   // ==========================================
   async placeOrder(tenantId: string, data: any) {
     const { tableId, type, items, deliveryInfo } = data;
-    this.validateItems(items);
-
     try {
       return await this.prisma.$transaction(async (tx) => {
         const order = await tx.orders.create({
@@ -170,19 +160,12 @@ export class OrdersService {
         for (const item of items) {
           const pid = item.productId || item.id;
           const product = await tx.products.findFirst({
-            where: { 
-              tenant_id: tenantId,
-              OR: [{ id: pid }, { linked_inventory_item_id: pid }]
-            }
+            where: { tenant_id: tenantId, OR: [{ id: pid }, { linked_inventory_item_id: pid }] }
           });
 
           const invId = product?.linked_inventory_item_id || item.inventoryItemId;
-
           if (invId) {
-            await tx.inventory_items.update({
-              where: { id: invId },
-              data: { quantity: { decrement: item.quantity } },
-            });
+            await tx.inventory_items.update({ where: { id: invId }, data: { quantity: { decrement: item.quantity } } });
           }
 
           await tx.order_items.create({
@@ -206,11 +189,8 @@ export class OrdersService {
     }
   }
 
-  // ==========================================
-  // PAYMENT / CANCEL / UPDATE
-  // ==========================================
   async processPayment(tenantId: string, data: any) {
-    const { p_order_id, amount, p_method, p_cashier_name } = data;
+    const { p_order_id, amount, p_method, p_cashier_name, p_cash_session_id } = data;
     await this.prisma.orders.update({
       where: { id: p_order_id },
       data: { is_paid: true, status: 'COMPLETED' },
@@ -222,27 +202,27 @@ export class OrdersService {
     const items = await this.prisma.order_items.findMany({ where: { order_id: orderId } });
     for (const item of items) {
       if (item.inventory_item_id) {
-        await this.prisma.inventory_items.update({
-          where: { id: item.inventory_item_id },
-          data: { quantity: { increment: item.quantity } },
-        });
+        await this.prisma.inventory_items.update({ where: { id: item.inventory_item_id }, data: { quantity: { increment: item.quantity } } });
       }
     }
     await this.prisma.orders.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
     return { success: true };
   }
 
+  // ✅ CORREÇÃO: Adicionado o terceiro parâmetro 'courierInfo' para bater com o Controller
   async dispatchOrder(tenantId: string, orderId: string, courierInfo: any) {
-    await this.prisma.orders.update({ where: { id: orderId }, data: { status: 'DISPATCHED' } });
+    await this.prisma.orders.updateMany({
+      where: { id: orderId, tenant_id: tenantId },
+      data: { 
+        status: 'DISPATCHED',
+        delivery_info: courierInfo || null 
+      },
+    });
     return { success: true };
   }
 
   async updateItemStatus(tenantId: string, itemId: string, status: string) {
     await this.prisma.order_items.update({ where: { id: itemId }, data: { status } });
     return { success: true };
-  }
-
-  private validateItems(items: any[]) {
-    if (!items || items.length === 0) throw new BadRequestException('Sem itens.');
   }
 }
