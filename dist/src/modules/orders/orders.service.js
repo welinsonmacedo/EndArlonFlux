@@ -119,6 +119,7 @@ let OrdersService = class OrdersService {
                             status: 'COMPLETED',
                             product_name: item.name || 'Produto',
                             product_price: Number(item.salePrice) || 0,
+                            product_type: item.type || 'PVD',
                         },
                     });
                 }
