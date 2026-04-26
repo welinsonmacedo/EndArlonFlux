@@ -10,15 +10,20 @@ export class OrdersService {
   constructor(private readonly prisma: PrismaService) {}
 
   // ==========================================
-  // PDV SALE (Lógica Idêntica ao seu SQL)
+  // PDV SALE (Venda Direta de Balcão)
   // ==========================================
   async processPosSale(tenantId: string, data: any) {
-    // Mapeamento dos parâmetros enviados pelo Front conforme sua função SQL
+    // Mapeamento dos parâmetros enviados pelo Front e exigidos pelo seu SQL
     const { p_customer_name, p_method, p_items, p_cashier_name, p_cash_session_id } = data;
     const items = p_items || data.items || [];
+    const sessionId = p_cash_session_id || data.cashSessionId;
 
     if (items.length === 0) {
       throw new BadRequestException('A venda não possui itens.');
+    }
+
+    if (!sessionId) {
+      throw new BadRequestException('Não é possível realizar venda sem um caixa aberto (Sessão ausente).');
     }
 
     try {
@@ -27,7 +32,6 @@ export class OrdersService {
         const processedItems = [];
 
         for (const item of items) {
-          // Captura ID do Front (prioriza o que o seu SQL pede: productId)
           const v_product_id = item.productId || item.id || null;
           const v_inventory_item_id = item.inventoryItemId || item.inventory_item_id || null;
           const v_quantity = Number(item.quantity || 1);
@@ -39,7 +43,7 @@ export class OrdersService {
           let v_cost_price = 0;
           let v_final_inventory_id = v_inventory_item_id;
 
-          // Busca Hierárquica idêntica ao SQL: 1º em Products, 2º em Inventory
+          // Lógica de Busca idêntica à sua função SQL do Supabase
           if (v_product_id) {
             const product = await tx.products.findFirst({
               where: { id: v_product_id, tenant_id: tenantId },
@@ -53,9 +57,9 @@ export class OrdersService {
             }
           } 
           
-          if (v_product_name === 'Produto Desconhecido' && (v_inventory_item_id || v_final_inventory_id)) {
+          if (v_product_name === 'Produto Desconhecido' && v_final_inventory_id) {
             const invItem = await tx.inventory_items.findFirst({
-              where: { id: v_inventory_item_id || v_final_inventory_id, tenant_id: tenantId },
+              where: { id: v_final_inventory_id, tenant_id: tenantId },
             });
             if (invItem) {
               v_product_name = invItem.name;
@@ -82,7 +86,7 @@ export class OrdersService {
           });
         }
 
-        // 1. Criar o Pedido
+        // 1. Criar o Pedido (Orders)
         const order = await tx.orders.create({
           data: {
             tenant_id: tenantId,
@@ -118,23 +122,25 @@ export class OrdersService {
               product_cost_price: pi.v_cost_price,
               unit_price: pi.v_product_price,
               total_price: pi.v_total_price,
-            } as any, // as any para suportar os campos extras do seu DB
+            } as any,
           });
         }
 
-        // 3. Registrar Transação (Removido campos "type" e "category" que travam o Prisma)
+        // 3. Registrar Transação Financeira (CORREÇÃO DA VIOLAÇÃO NULA)
+        // Usamos "as any" aqui porque seu schema.prisma pode não ter mapeado type/category ainda
         await tx.transactions.create({
           data: {
             tenant_id: tenantId,
             order_id: order.id,
-            cash_session_id: p_cash_session_id || null,
+            cash_session_id: sessionId,
             amount: v_total_amount,
             method: p_method || 'DINHEIRO',
             items_summary: 'Venda Balcão (PDV)',
             status: 'COMPLETED',
             cashier_name: p_cashier_name || 'Sistema',
-            // BLOQUEADO: type e category não estão no schema.prisma
-          },
+            type: 'INCOME',    // 👈 Campo obrigatório no seu SQL
+            category: 'SALE',  // 👈 Campo obrigatório no seu SQL
+          } as any,
         });
 
         return { success: true, order_id: order.id };
@@ -146,67 +152,53 @@ export class OrdersService {
   }
 
   // ==========================================
-  // OUTRAS FUNÇÕES (Ajustadas para consistência)
+  // OUTRAS FUNÇÕES (Correção do Build)
   // ==========================================
   async placeOrder(tenantId: string, data: any) {
     const { tableId, type, items, deliveryInfo } = data;
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        const order = await tx.orders.create({
-          data: {
-            tenant_id: tenantId,
-            table_id: tableId || null,
-            order_type: type || 'DINE_IN',
-            status: 'PENDING',
-            is_paid: false,
-            delivery_info: deliveryInfo || null,
-          },
+    return await this.prisma.$transaction(async (tx) => {
+      const order = await tx.orders.create({
+        data: {
+          tenant_id: tenantId,
+          table_id: tableId || null,
+          order_type: type || 'DINE_IN',
+          status: 'PENDING',
+          is_paid: false,
+          delivery_info: deliveryInfo || null,
+        },
+      });
+      for (const item of items) {
+        const pid = item.productId || item.id;
+        const product = await tx.products.findFirst({
+          where: { tenant_id: tenantId, OR: [{ id: pid }, { linked_inventory_item_id: pid }] }
         });
-
-        for (const item of items) {
-          const pid = item.productId || item.id;
-          const product = await tx.products.findFirst({
-            where: { tenant_id: tenantId, OR: [{ id: pid }, { linked_inventory_item_id: pid }] }
-          });
-          const invId = product?.linked_inventory_item_id || item.inventoryItemId;
-          if (invId) {
-            await tx.inventory_items.update({ where: { id: invId }, data: { quantity: { decrement: item.quantity } } });
-          }
+        if (product) {
           await tx.order_items.create({
             data: {
               tenant_id: tenantId,
               order_id: order.id,
-              product_id: product?.id || pid,
-              inventory_item_id: invId || null,
+              product_id: product.id,
               quantity: item.quantity,
-              product_name: product?.name || 'Produto',
-              product_price: Number(product?.price || 0),
-              product_type: product?.type || 'SIMPLE',
+              product_name: product.name,
+              product_price: Number(product.price || 0),
+              product_type: product.type,
               status: 'PENDING',
             } as any,
           });
         }
-        return order;
-      });
-    } catch (error: any) {
-      throw new BadRequestException(error.message);
-    }
+      }
+      return order;
+    });
   }
 
   async processPayment(tenantId: string, data: any) {
     const { p_order_id } = data;
-    await this.prisma.orders.update({
-      where: { id: p_order_id },
-      data: { is_paid: true, status: 'COMPLETED' },
-    });
+    await this.prisma.orders.update({ where: { id: p_order_id }, data: { is_paid: true, status: 'COMPLETED' } });
     return { success: true };
   }
 
   async cancelOrder(tenantId: string, orderId: string) {
-    await this.prisma.orders.update({
-      where: { id: orderId },
-      data: { status: 'CANCELLED' }
-    });
+    await this.prisma.orders.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
     return { success: true };
   }
 

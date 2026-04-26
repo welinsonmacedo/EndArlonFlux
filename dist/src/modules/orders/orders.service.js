@@ -19,8 +19,12 @@ let OrdersService = class OrdersService {
     async processPosSale(tenantId, data) {
         const { p_customer_name, p_method, p_items, p_cashier_name, p_cash_session_id } = data;
         const items = p_items || data.items || [];
+        const sessionId = p_cash_session_id || data.cashSessionId;
         if (items.length === 0) {
             throw new common_1.BadRequestException('A venda não possui itens.');
+        }
+        if (!sessionId) {
+            throw new common_1.BadRequestException('Não é possível realizar venda sem um caixa aberto (Sessão ausente).');
         }
         try {
             return await this.prisma.$transaction(async (tx) => {
@@ -48,9 +52,9 @@ let OrdersService = class OrdersService {
                             v_final_inventory_id = product.linked_inventory_item_id;
                         }
                     }
-                    if (v_product_name === 'Produto Desconhecido' && (v_inventory_item_id || v_final_inventory_id)) {
+                    if (v_product_name === 'Produto Desconhecido' && v_final_inventory_id) {
                         const invItem = await tx.inventory_items.findFirst({
-                            where: { id: v_inventory_item_id || v_final_inventory_id, tenant_id: tenantId },
+                            where: { id: v_final_inventory_id, tenant_id: tenantId },
                         });
                         if (invItem) {
                             v_product_name = invItem.name;
@@ -113,12 +117,14 @@ let OrdersService = class OrdersService {
                     data: {
                         tenant_id: tenantId,
                         order_id: order.id,
-                        cash_session_id: p_cash_session_id || null,
+                        cash_session_id: sessionId,
                         amount: v_total_amount,
                         method: p_method || 'DINHEIRO',
                         items_summary: 'Venda Balcão (PDV)',
                         status: 'COMPLETED',
                         cashier_name: p_cashier_name || 'Sistema',
+                        type: 'INCOME',
+                        category: 'SALE',
                     },
                 });
                 return { success: true, order_id: order.id };
@@ -131,61 +137,47 @@ let OrdersService = class OrdersService {
     }
     async placeOrder(tenantId, data) {
         const { tableId, type, items, deliveryInfo } = data;
-        try {
-            return await this.prisma.$transaction(async (tx) => {
-                const order = await tx.orders.create({
-                    data: {
-                        tenant_id: tenantId,
-                        table_id: tableId || null,
-                        order_type: type || 'DINE_IN',
-                        status: 'PENDING',
-                        is_paid: false,
-                        delivery_info: deliveryInfo || null,
-                    },
+        return await this.prisma.$transaction(async (tx) => {
+            const order = await tx.orders.create({
+                data: {
+                    tenant_id: tenantId,
+                    table_id: tableId || null,
+                    order_type: type || 'DINE_IN',
+                    status: 'PENDING',
+                    is_paid: false,
+                    delivery_info: deliveryInfo || null,
+                },
+            });
+            for (const item of items) {
+                const pid = item.productId || item.id;
+                const product = await tx.products.findFirst({
+                    where: { tenant_id: tenantId, OR: [{ id: pid }, { linked_inventory_item_id: pid }] }
                 });
-                for (const item of items) {
-                    const pid = item.productId || item.id;
-                    const product = await tx.products.findFirst({
-                        where: { tenant_id: tenantId, OR: [{ id: pid }, { linked_inventory_item_id: pid }] }
-                    });
-                    const invId = product?.linked_inventory_item_id || item.inventoryItemId;
-                    if (invId) {
-                        await tx.inventory_items.update({ where: { id: invId }, data: { quantity: { decrement: item.quantity } } });
-                    }
+                if (product) {
                     await tx.order_items.create({
                         data: {
                             tenant_id: tenantId,
                             order_id: order.id,
-                            product_id: product?.id || pid,
-                            inventory_item_id: invId || null,
+                            product_id: product.id,
                             quantity: item.quantity,
-                            product_name: product?.name || 'Produto',
-                            product_price: Number(product?.price || 0),
-                            product_type: product?.type || 'SIMPLE',
+                            product_name: product.name,
+                            product_price: Number(product.price || 0),
+                            product_type: product.type,
                             status: 'PENDING',
                         },
                     });
                 }
-                return order;
-            });
-        }
-        catch (error) {
-            throw new common_1.BadRequestException(error.message);
-        }
+            }
+            return order;
+        });
     }
     async processPayment(tenantId, data) {
         const { p_order_id } = data;
-        await this.prisma.orders.update({
-            where: { id: p_order_id },
-            data: { is_paid: true, status: 'COMPLETED' },
-        });
+        await this.prisma.orders.update({ where: { id: p_order_id }, data: { is_paid: true, status: 'COMPLETED' } });
         return { success: true };
     }
     async cancelOrder(tenantId, orderId) {
-        await this.prisma.orders.update({
-            where: { id: orderId },
-            data: { status: 'CANCELLED' }
-        });
+        await this.prisma.orders.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
         return { success: true };
     }
     async dispatchOrder(tenantId, orderId, courierInfo) {
