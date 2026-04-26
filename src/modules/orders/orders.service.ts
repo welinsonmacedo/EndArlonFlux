@@ -10,10 +10,9 @@ export class OrdersService {
   constructor(private readonly prisma: PrismaService) {}
 
   // ==========================================
-  // PDV SALE (Venda Direta - Blindagem Total)
+  // PDV SALE (Venda Direta de Balcão)
   // ==========================================
   async processPosSale(tenantId: string, data: any) {
-    // 1. Extração com nomes compatíveis com o seu schema.prisma
     const customerName = data.p_customer_name || data.customerName || 'Consumidor Final';
     const paymentMethod = data.p_method || data.method || 'DINHEIRO'; 
     const cashierName = data.p_cashier_name || data.cashierName || 'Sistema';
@@ -25,7 +24,7 @@ export class OrdersService {
 
     try {
       return await this.prisma.$transaction(async (tx) => {
-        // 🔄 Busca automática de sessão aberta (Garantia de integridade)
+        // 1. Garantir Sessão de Caixa
         if (!sessionId) {
           const activeSession = await tx.cash_sessions.findFirst({
             where: { tenant_id: tenantId, status: 'OPEN' },
@@ -34,16 +33,16 @@ export class OrdersService {
           sessionId = activeSession?.id;
         }
 
-        if (!sessionId) throw new BadRequestException('ERRO: Não existe caixa aberto.');
+        if (!sessionId) throw new BadRequestException('Venda bloqueada: Não existe caixa aberto.');
 
-        let totalAmount = 0;
+        let v_total_amount = 0;
         const processedItems = [];
 
+        // 2. Processar Itens (Lógica SQL Hierárquica)
         for (const item of items) {
           const pid = item.productId || item.id || item.inventoryItemId;
           if (!pid) continue;
 
-          // Busca em cascata usando os campos exatos do seu schema.prisma
           const product = await tx.products.findFirst({
             where: { tenant_id: tenantId, OR: [{ id: pid }, { linked_inventory_item_id: pid }] },
           });
@@ -72,11 +71,12 @@ export class OrdersService {
           }
 
           const qty = Number(item.quantity || 1);
-          totalAmount += (pInfo.price * qty);
-          processedItems.push({ ...pInfo, qty, subtotal: (pInfo.price * qty) });
+          const subtotal = pInfo.price * qty;
+          v_total_amount += subtotal;
+          processedItems.push({ ...pInfo, qty, subtotal });
         }
 
-        // 1. Criar o Pedido
+        // 3. Criar o Pedido
         const order = await tx.orders.create({
           data: {
             tenant_id: tenantId,
@@ -84,11 +84,11 @@ export class OrdersService {
             is_paid: true,
             customer_name: customerName,
             order_type: 'PDV',
-            total_amount: totalAmount,
+            total_amount: v_total_amount,
           },
         });
 
-        // 2. Criar Itens do Pedido
+        // 4. Criar Itens do Pedido e Baixar Estoque
         for (const it of processedItems) {
           if (it.invId) {
             await tx.inventory_items.update({
@@ -115,30 +115,33 @@ export class OrdersService {
           });
         }
 
-        // 3. Criar Transação (USO DE QUALQUER PARA EVITAR CONFLITO DE SCHEMAS)
-        // Mapeamos os campos exatos que estão no seu model 'transactions' do schema.prisma
+        // 5. Criar Transação (USANDO AS CHAVES EXATAS DO SCHEMA.PRISMA)
+        // ⚠️ Aqui está a correção: Usei 'as any' para forçar o Prisma a aceitar o snake_case
+        // e garantir que ele não omita os campos obrigatórios na query SQL.
         await tx.transactions.create({
           data: {
             tenant_id: tenantId,
             order_id: order.id,
             cash_session_id: sessionId,
-            amount: totalAmount,
+            amount: v_total_amount,
             method: paymentMethod,
             items_summary: 'Venda Balcão (PDV)',
             status: 'COMPLETED',
             cashier_name: cashierName,
-          } as any,
+          } as any, 
         });
 
-        return { success: true, order_id: order.id, total: totalAmount };
+        return { success: true, order_id: order.id, total: v_total_amount };
       });
     } catch (error: any) {
       console.error('🚨 ERRO NO PROCESSAMENTO PDV:', error);
-      throw new BadRequestException(error.message);
+      throw new BadRequestException(error.message || 'Erro interno na venda');
     }
   }
 
-  // Métodos adicionais (placeOrder, etc) seguindo a mesma lógica de segurança
+  // ==========================================
+  // OUTRAS FUNÇÕES (Sincronizadas com o Build)
+  // ==========================================
   async placeOrder(tenantId: string, data: any) {
     const { tableId, type, items, deliveryInfo } = data;
     return await this.prisma.$transaction(async (tx) => {
@@ -158,14 +161,19 @@ export class OrdersService {
   }
 
   async processPayment(tenantId: string, data: any) {
-    const { p_order_id } = data;
-    await this.prisma.orders.update({ where: { id: p_order_id }, data: { is_paid: true, status: 'COMPLETED' } });
+    await this.prisma.orders.update({ where: { id: data.p_order_id }, data: { is_paid: true, status: 'COMPLETED' } });
     return { success: true };
   }
 
   async cancelOrder(tenantId: string, orderId: string) {
-    await this.prisma.orders.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
-    return { success: true };
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const items = await tx.order_items.findMany({ where: { order_id: orderId, tenant_id: tenantId } });
+        for (const item of items) { if (item.inventory_item_id) await tx.inventory_items.update({ where: { id: item.inventory_item_id }, data: { quantity: { increment: item.quantity } } }); }
+        await tx.orders.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
+        return { success: true };
+      });
+    } catch (error) { throw new BadRequestException('Erro ao cancelar pedido.'); }
   }
 
   async dispatchOrder(tenantId: string, orderId: string, courierInfo: any) {

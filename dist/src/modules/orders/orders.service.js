@@ -34,8 +34,8 @@ let OrdersService = class OrdersService {
                     sessionId = activeSession?.id;
                 }
                 if (!sessionId)
-                    throw new common_1.BadRequestException('ERRO: Não existe caixa aberto.');
-                let totalAmount = 0;
+                    throw new common_1.BadRequestException('Venda bloqueada: Não existe caixa aberto.');
+                let v_total_amount = 0;
                 const processedItems = [];
                 for (const item of items) {
                     const pid = item.productId || item.id || item.inventoryItemId;
@@ -69,8 +69,9 @@ let OrdersService = class OrdersService {
                         };
                     }
                     const qty = Number(item.quantity || 1);
-                    totalAmount += (pInfo.price * qty);
-                    processedItems.push({ ...pInfo, qty, subtotal: (pInfo.price * qty) });
+                    const subtotal = pInfo.price * qty;
+                    v_total_amount += subtotal;
+                    processedItems.push({ ...pInfo, qty, subtotal });
                 }
                 const order = await tx.orders.create({
                     data: {
@@ -79,7 +80,7 @@ let OrdersService = class OrdersService {
                         is_paid: true,
                         customer_name: customerName,
                         order_type: 'PDV',
-                        total_amount: totalAmount,
+                        total_amount: v_total_amount,
                     },
                 });
                 for (const it of processedItems) {
@@ -111,19 +112,19 @@ let OrdersService = class OrdersService {
                         tenant_id: tenantId,
                         order_id: order.id,
                         cash_session_id: sessionId,
-                        amount: totalAmount,
+                        amount: v_total_amount,
                         method: paymentMethod,
                         items_summary: 'Venda Balcão (PDV)',
                         status: 'COMPLETED',
                         cashier_name: cashierName,
                     },
                 });
-                return { success: true, order_id: order.id, total: totalAmount };
+                return { success: true, order_id: order.id, total: v_total_amount };
             });
         }
         catch (error) {
             console.error('🚨 ERRO NO PROCESSAMENTO PDV:', error);
-            throw new common_1.BadRequestException(error.message);
+            throw new common_1.BadRequestException(error.message || 'Erro interno na venda');
         }
     }
     async placeOrder(tenantId, data) {
@@ -146,13 +147,24 @@ let OrdersService = class OrdersService {
         });
     }
     async processPayment(tenantId, data) {
-        const { p_order_id } = data;
-        await this.prisma.orders.update({ where: { id: p_order_id }, data: { is_paid: true, status: 'COMPLETED' } });
+        await this.prisma.orders.update({ where: { id: data.p_order_id }, data: { is_paid: true, status: 'COMPLETED' } });
         return { success: true };
     }
     async cancelOrder(tenantId, orderId) {
-        await this.prisma.orders.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
-        return { success: true };
+        try {
+            return await this.prisma.$transaction(async (tx) => {
+                const items = await tx.order_items.findMany({ where: { order_id: orderId, tenant_id: tenantId } });
+                for (const item of items) {
+                    if (item.inventory_item_id)
+                        await tx.inventory_items.update({ where: { id: item.inventory_item_id }, data: { quantity: { increment: item.quantity } } });
+                }
+                await tx.orders.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
+                return { success: true };
+            });
+        }
+        catch (error) {
+            throw new common_1.BadRequestException('Erro ao cancelar pedido.');
+        }
     }
     async dispatchOrder(tenantId, orderId, courierInfo) {
         await this.prisma.orders.updateMany({ where: { id: orderId, tenant_id: tenantId }, data: { status: 'DISPATCHED', delivery_info: courierInfo || null } });
