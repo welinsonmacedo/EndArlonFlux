@@ -10,22 +10,24 @@ export class OrdersService {
   constructor(private readonly prisma: PrismaService) {}
 
   // ==========================================
-  // PDV SALE (Venda Direta - Estrutura Real do DB)
+  // PDV SALE (Venda Direta - Blindagem Total)
   // ==========================================
   async processPosSale(tenantId: string, data: any) {
-    const { p_customer_name, p_method, p_cashier_name } = data;
+    // 1. Extração com Fallbacks para evitar campos NULL
+    const customerName = data.p_customer_name || data.customerName || 'Consumidor Final';
+    const paymentMethod = data.p_method || data.method || 'DINHEIRO'; // 👈 CRITICAL: Evita o erro de constraint
+    const cashierName = data.p_cashier_name || data.cashierName || 'Sistema';
     const items = data.p_items || data.items || [];
     
-    // Captura o ID da sessão de caixa (essencial para o seu sistema)
     let sessionId = data.p_cash_session_id || data.cashSessionId || data.sessionId;
 
-    if (!items || items.length === 0) {
+    if (items.length === 0) {
       throw new BadRequestException('A venda não possui itens.');
     }
 
     try {
       return await this.prisma.$transaction(async (tx) => {
-        // 1. Busca automática de sessão aberta caso não enviada pelo front
+        // 🔄 Busca automática de sessão se o Front não enviou
         if (!sessionId) {
           const activeSession = await tx.cash_sessions.findFirst({
             where: { tenant_id: tenantId, status: 'OPEN' },
@@ -34,19 +36,20 @@ export class OrdersService {
           sessionId = activeSession?.id;
         }
 
+        // Se mesmo buscando no banco não houver caixa aberto, bloqueia por regra de negócio
         if (!sessionId) {
-          throw new BadRequestException('Venda bloqueada: Nenhuma sessão de caixa aberta encontrada.');
+          throw new BadRequestException('Venda bloqueada: Não existe sessão de caixa aberta para este restaurante.');
         }
 
         let v_total_amount = 0;
         const processedItems = [];
 
-        // 2. Processamento de Itens
+        // 2. Loop de processamento de itens
         for (const item of items) {
           const pid = item.productId || item.id || item.inventoryItemId;
           if (!pid) continue;
 
-          // Busca hierárquica conforme sua lógica de negócio
+          // Busca hierárquica (Produtos -> Insumos)
           const product = await tx.products.findFirst({
             where: { 
               tenant_id: tenantId,
@@ -66,7 +69,7 @@ export class OrdersService {
               productId: product.id
             };
           } else {
-            // Tenta buscar direto no estoque se não for produto
+            // Se não é produto, busca direto no estoque (Insumo)
             const invItem = await tx.inventory_items.findFirst({
               where: { id: pid, tenant_id: tenantId }
             });
@@ -96,13 +99,13 @@ export class OrdersService {
             tenant_id: tenantId,
             status: 'DELIVERED',
             is_paid: true,
-            customer_name: p_customer_name || 'Consumidor Final',
+            customer_name: customerName,
             order_type: 'PDV',
             total_amount: v_total_amount,
           },
         });
 
-        // 4. Criar Itens do Pedido e Baixar Estoque
+        // 4. Criar Order Items e Baixar Estoque
         for (const pItem of processedItems) {
           if (pItem.inventoryId) {
             await tx.inventory_items.update({
@@ -130,18 +133,17 @@ export class OrdersService {
           });
         }
 
-        // 5. Registrar Transação Financeira (ESTRUTURA EXATA DA SUA TABELA)
+        // 5. Registrar Transação Financeira (Sincronizado com seu CREATE TABLE)
         await tx.transactions.create({
           data: {
             tenant_id: tenantId,
             order_id: order.id,
             cash_session_id: sessionId,
             amount: v_total_amount,
-            method: p_method || 'DINHEIRO',
+            method: paymentMethod, // Nunca será null agora
             items_summary: 'Venda Balcão (PDV)',
             status: 'COMPLETED',
-            cashier_name: p_cashier_name || 'Sistema',
-            // Note: type e category foram removidos pois não existem na sua tabela transactions
+            cashier_name: cashierName,
           },
         });
 
@@ -149,12 +151,12 @@ export class OrdersService {
       });
     } catch (error: any) {
       console.error('🚨 Erro PDV:', error.message);
-      throw new BadRequestException(error.message);
+      throw new BadRequestException(error.message || 'Erro interno na venda');
     }
   }
 
   // ==========================================
-  // OUTRAS FUNÇÕES
+  // OUTRAS FUNÇÕES (Mantendo integridade)
   // ==========================================
   async placeOrder(tenantId: string, data: any) {
     const { tableId, type, items, deliveryInfo } = data;

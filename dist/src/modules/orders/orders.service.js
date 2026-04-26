@@ -17,10 +17,12 @@ let OrdersService = class OrdersService {
         this.prisma = prisma;
     }
     async processPosSale(tenantId, data) {
-        const { p_customer_name, p_method, p_cashier_name } = data;
+        const customerName = data.p_customer_name || data.customerName || 'Consumidor Final';
+        const paymentMethod = data.p_method || data.method || 'DINHEIRO';
+        const cashierName = data.p_cashier_name || data.cashierName || 'Sistema';
         const items = data.p_items || data.items || [];
         let sessionId = data.p_cash_session_id || data.cashSessionId || data.sessionId;
-        if (!items || items.length === 0) {
+        if (items.length === 0) {
             throw new common_1.BadRequestException('A venda não possui itens.');
         }
         try {
@@ -33,7 +35,7 @@ let OrdersService = class OrdersService {
                     sessionId = activeSession?.id;
                 }
                 if (!sessionId) {
-                    throw new common_1.BadRequestException('Venda bloqueada: Nenhuma sessão de caixa aberta encontrada.');
+                    throw new common_1.BadRequestException('Venda bloqueada: Não existe sessão de caixa aberta para este restaurante.');
                 }
                 let v_total_amount = 0;
                 const processedItems = [];
@@ -83,7 +85,7 @@ let OrdersService = class OrdersService {
                         tenant_id: tenantId,
                         status: 'DELIVERED',
                         is_paid: true,
-                        customer_name: p_customer_name || 'Consumidor Final',
+                        customer_name: customerName,
                         order_type: 'PDV',
                         total_amount: v_total_amount,
                     },
@@ -119,10 +121,10 @@ let OrdersService = class OrdersService {
                         order_id: order.id,
                         cash_session_id: sessionId,
                         amount: v_total_amount,
-                        method: p_method || 'DINHEIRO',
+                        method: paymentMethod,
                         items_summary: 'Venda Balcão (PDV)',
                         status: 'COMPLETED',
-                        cashier_name: p_cashier_name || 'Sistema',
+                        cashier_name: cashierName,
                     },
                 });
                 return { success: true, order_id: order.id, total: v_total_amount };
@@ -130,7 +132,7 @@ let OrdersService = class OrdersService {
         }
         catch (error) {
             console.error('🚨 Erro PDV:', error.message);
-            throw new common_1.BadRequestException(error.message);
+            throw new common_1.BadRequestException(error.message || 'Erro interno na venda');
         }
     }
     async placeOrder(tenantId, data) {
