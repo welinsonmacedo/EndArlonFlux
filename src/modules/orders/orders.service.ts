@@ -44,7 +44,7 @@ export class OrdersService {
           data: {
             tenant_id: tenantId,
             table_id: tableId || null,
-            type: type || 'DINE_IN',
+            order_type: type || 'DINE_IN',
             status: 'PENDING',
             is_paid: false,
             delivery_info: deliveryInfo || null,
@@ -126,7 +126,7 @@ export class OrdersService {
         const order = await tx.orders.create({
           data: {
             tenant_id: tenantId,
-            type: 'PDV',
+            order_type: 'PDV',
             status: 'COMPLETED',
             is_paid: true,
           },
