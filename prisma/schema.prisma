@@ -1886,11 +1886,3 @@ enum work_model {
 
   @@schema("public")
 }
-model payments {
-  id         String   @id @default(uuid())
-  tenant_id  String
-  order_id   String?
-  amount     Float
-  method     String
-  created_at DateTime @default(now())
-}
