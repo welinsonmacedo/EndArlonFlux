@@ -19,4 +19,25 @@ export class OrdersController {
     
     return this.ordersService.placeOrder(tenantId, body);
   }
+  @Post('pos-sale')
+  @UseGuards(SupabaseGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async processPosSale(
+    @Headers('x-tenant-id') tenantId: string, 
+    @Body() body: any,
+  ) {
+    if (!tenantId) return { success: false, message: 'Tenant ID é obrigatório' };
+    return this.ordersService.processPosSale(tenantId, body);
+  }
+
+  @Post('payment')
+  @UseGuards(SupabaseGuard)
+  @HttpCode(HttpStatus.OK)
+  async processPayment(
+    @Headers('x-tenant-id') tenantId: string, 
+    @Body() body: any,
+  ) {
+    if (!tenantId) return { success: false, message: 'Tenant ID é obrigatório' };
+    return this.ordersService.processPayment(tenantId, body);
+  }
 }
