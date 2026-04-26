@@ -29,83 +29,31 @@ let OrdersService = class OrdersService {
             throw new common_1.BadRequestException('Não envie tableId e orderId juntos');
         }
     }
-    async placeOrder(tenantId, data) {
-        const { tableId, type, items, deliveryInfo } = data;
-        this.validateItems(items);
-        try {
-            const result = await this.prisma.$transaction(async (tx) => {
-                const order = await tx.orders.create({
-                    data: {
-                        tenant_id: tenantId,
-                        table_id: tableId || null,
-                        order_type: type || 'DINE_IN',
-                        status: 'PENDING',
-                        is_paid: false,
-                        delivery_info: deliveryInfo || null,
-                    },
-                });
-                for (const item of items) {
-                    if (item.inventoryItemId) {
-                        const inventory = await tx.inventory_items.findUnique({
-                            where: { id: item.inventoryItemId },
-                        });
-                        if (!inventory)
-                            throw new common_1.NotFoundException(`Item de estoque não encontrado: ${item.name}`);
-                        if (inventory.quantity < item.quantity) {
-                            throw new common_1.BadRequestException(`Estoque insuficiente para ${item.name}`);
-                        }
-                        await tx.inventory_items.update({
-                            where: { id: item.inventoryItemId },
-                            data: { quantity: { decrement: item.quantity } },
-                        });
-                    }
-                    await tx.order_items.create({
-                        data: {
-                            tenant_id: tenantId,
-                            order_id: order.id,
-                            product_id: item.productId || null,
-                            inventory_item_id: item.inventoryItemId || null,
-                            quantity: item.quantity,
-                            product_name: item.name || 'Produto',
-                            product_price: Number(item.salePrice) || 0,
-                            notes: item.notes || null,
-                            status: 'PENDING',
-                            product_type: item.type || 'KITCHEN',
-                        },
-                    });
-                }
-                return order;
-            });
-            return { success: true, order: result };
-        }
-        catch (error) {
-            console.error('Erro no placeOrder:', error);
-            throw new common_1.BadRequestException(error.message || 'Erro ao criar pedido');
-        }
-    }
     async processPosSale(tenantId, data) {
         const { customerName, method, items, cashierName } = data;
         this.validateItems(items);
         try {
             return await this.prisma.$transaction(async (tx) => {
                 let totalAmount = 0;
-                const itemsWithPrices = [];
+                const processedItems = [];
                 for (const item of items) {
+                    const productId = item.id || item.productId;
                     const product = await tx.products.findUnique({
-                        where: { id: item.productId, tenant_id: tenantId },
+                        where: { id: productId, tenant_id: tenantId },
                     });
                     if (!product) {
-                        throw new common_1.NotFoundException(`Produto com ID ${item.productId} não encontrado.`);
+                        throw new common_1.NotFoundException(`Produto ${productId} não encontrado.`);
                     }
                     const unitPrice = Number(product.price || 0);
-                    const quantity = Number(item.quantity || 1);
-                    const subtotal = unitPrice * quantity;
-                    totalAmount += subtotal;
-                    itemsWithPrices.push({
-                        ...item,
-                        unitPrice,
+                    const qty = Number(item.quantity || 1);
+                    totalAmount += unitPrice * qty;
+                    processedItems.push({
+                        productId: product.id,
                         name: product.name,
-                        type: product.type || 'KITCHEN'
+                        price: unitPrice,
+                        quantity: qty,
+                        type: product.type || 'KITCHEN',
+                        inventoryItemId: item.inventory_item_id || product.linked_inventory_item_id,
                     });
                 }
                 const order = await tx.orders.create({
@@ -118,11 +66,11 @@ let OrdersService = class OrdersService {
                         total_amount: totalAmount,
                     },
                 });
-                for (const item of itemsWithPrices) {
+                for (const item of processedItems) {
                     if (item.inventoryItemId) {
                         await tx.inventory_items.update({
                             where: { id: item.inventoryItemId },
-                            data: { quantity: { decrement: Number(item.quantity) || 1 } },
+                            data: { quantity: { decrement: item.quantity } },
                         });
                     }
                     await tx.order_items.create({
@@ -131,12 +79,11 @@ let OrdersService = class OrdersService {
                             order_id: order.id,
                             product_id: item.productId,
                             inventory_item_id: item.inventoryItemId || null,
-                            quantity: Number(item.quantity) || 1,
-                            notes: item.notes || null,
-                            status: 'COMPLETED',
+                            quantity: item.quantity,
                             product_name: item.name,
-                            product_price: item.unitPrice,
+                            product_price: item.price,
                             product_type: item.type,
+                            status: 'COMPLETED',
                         },
                     });
                 }
@@ -154,8 +101,56 @@ let OrdersService = class OrdersService {
             });
         }
         catch (error) {
-            console.error('Erro no processPosSale:', error);
-            throw new common_1.BadRequestException(error.message || 'Erro ao processar venda PDV');
+            console.error('🚨 Erro Crítico PDV:', error);
+            throw new common_1.BadRequestException(error.message || 'Erro ao processar venda');
+        }
+    }
+    async placeOrder(tenantId, data) {
+        const { tableId, type, items, deliveryInfo } = data;
+        this.validateItems(items);
+        try {
+            return await this.prisma.$transaction(async (tx) => {
+                const order = await tx.orders.create({
+                    data: {
+                        tenant_id: tenantId,
+                        table_id: tableId || null,
+                        order_type: type || 'DINE_IN',
+                        status: 'PENDING',
+                        is_paid: false,
+                        delivery_info: deliveryInfo || null,
+                    },
+                });
+                for (const item of items) {
+                    const productId = item.id || item.productId;
+                    const product = await tx.products.findUnique({
+                        where: { id: productId, tenant_id: tenantId }
+                    });
+                    if (item.inventory_item_id || product?.linked_inventory_item_id) {
+                        await tx.inventory_items.update({
+                            where: { id: item.inventory_item_id || product?.linked_inventory_item_id },
+                            data: { quantity: { decrement: item.quantity } },
+                        });
+                    }
+                    await tx.order_items.create({
+                        data: {
+                            tenant_id: tenantId,
+                            order_id: order.id,
+                            product_id: productId,
+                            inventory_item_id: item.inventory_item_id || product?.linked_inventory_item_id || null,
+                            quantity: item.quantity,
+                            product_name: product?.name || 'Produto',
+                            product_price: Number(product?.price || 0),
+                            product_type: product?.type || 'KITCHEN',
+                            status: 'PENDING',
+                        },
+                    });
+                }
+                return order;
+            });
+        }
+        catch (error) {
+            console.error('Erro no placeOrder:', error);
+            throw new common_1.BadRequestException(error.message);
         }
     }
     async processPayment(tenantId, data) {
@@ -197,7 +192,7 @@ let OrdersService = class OrdersService {
         }
         catch (error) {
             console.error('Erro no processPayment:', error);
-            throw new common_1.BadRequestException(error.message || 'Erro no pagamento');
+            throw new common_1.BadRequestException('Erro no pagamento');
         }
     }
     async cancelOrder(tenantId, orderId) {
@@ -225,7 +220,7 @@ let OrdersService = class OrdersService {
         }
         catch (error) {
             console.error('Erro no cancelOrder:', error);
-            throw new common_1.BadRequestException(error.message || 'Erro ao cancelar pedido');
+            throw new common_1.BadRequestException('Erro ao cancelar pedido');
         }
     }
     async dispatchOrder(tenantId, orderId, courierInfo) {
