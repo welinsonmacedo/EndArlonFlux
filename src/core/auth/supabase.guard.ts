@@ -16,7 +16,7 @@ export class SupabaseGuard implements CanActivate {
    try {
       // O truque do 'as string' garante que o TypeScript não reclama do .env
       const secret = process.env.SUPABASE_JWT_SECRET as string;
-      const decoded = jwt.verify(token, secret);
+      const decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
       
       request.user = decoded; 
       return true;

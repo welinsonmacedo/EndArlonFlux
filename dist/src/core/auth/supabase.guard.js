@@ -52,7 +52,7 @@ let SupabaseGuard = class SupabaseGuard {
         const token = authHeader.split(' ')[1];
         try {
             const secret = process.env.SUPABASE_JWT_SECRET;
-            const decoded = jwt.verify(token, secret);
+            const decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
             request.user = decoded;
             return true;
         }
