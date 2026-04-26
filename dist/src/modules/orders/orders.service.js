@@ -28,19 +28,20 @@ let OrdersService = class OrdersService {
                 for (const item of items) {
                     const pid = item.id || item.inventoryItemId || item.productId;
                     if (!pid) {
-                        throw new common_1.BadRequestException('ID do produto não encontrado no item enviado.');
+                        throw new common_1.BadRequestException('ID do produto não fornecido.');
                     }
                     const product = await tx.products.findFirst({
                         where: {
+                            tenant_id: tenantId,
                             OR: [
                                 { id: pid },
                                 { linked_inventory_item_id: pid }
-                            ],
-                            tenant_id: tenantId
+                            ]
                         },
                     });
                     if (!product) {
-                        throw new common_1.NotFoundException(`Produto ${pid} não localizado.`);
+                        console.error(`❌ Produto não encontrado. ID: ${pid} | Tenant: ${tenantId}`);
+                        throw new common_1.NotFoundException(`Produto ${pid} não localizado no sistema.`);
                     }
                     const unitPrice = Number(product.price || 0);
                     const qty = Number(item.quantity || 1);
@@ -99,7 +100,7 @@ let OrdersService = class OrdersService {
             });
         }
         catch (error) {
-            console.error('Erro PDV:', error);
+            console.error('🚨 Erro Crítico no PDV:', error);
             throw new common_1.BadRequestException(error.message || 'Erro ao processar venda');
         }
     }
@@ -123,8 +124,11 @@ let OrdersService = class OrdersService {
                     const pid = item.productId || item.id;
                     const product = await tx.products.findFirst({
                         where: {
-                            OR: [{ id: pid }, { linked_inventory_item_id: pid }],
-                            tenant_id: tenantId
+                            tenant_id: tenantId,
+                            OR: [
+                                { id: pid },
+                                { linked_inventory_item_id: pid }
+                            ]
                         }
                     });
                     const invId = product?.linked_inventory_item_id;
@@ -178,7 +182,6 @@ let OrdersService = class OrdersService {
                 await tx.transactions.create({
                     data: {
                         tenant_id: tenantId,
-                        table_id: tableId || null,
                         order_id: orderId || null,
                         amount: Number(amount) || 0,
                         method: method || 'DINHEIRO',
@@ -223,17 +226,13 @@ let OrdersService = class OrdersService {
             where: { id: orderId, tenant_id: tenantId },
             data: { status: 'DISPATCHED', delivery_info: courierInfo || null },
         });
-        if (result.count === 0)
-            throw new common_1.NotFoundException('Pedido não encontrado');
         return { success: true };
     }
     async updateItemStatus(tenantId, itemId, status) {
-        const result = await this.prisma.order_items.updateMany({
+        await this.prisma.order_items.updateMany({
             where: { id: itemId, tenant_id: tenantId },
             data: { status },
         });
-        if (result.count === 0)
-            throw new common_1.NotFoundException('Item não encontrado');
         return { success: true };
     }
 };
