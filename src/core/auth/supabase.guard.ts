@@ -14,12 +14,13 @@ export class SupabaseGuard implements CanActivate {
     const token = authHeader.split(' ')[1]; // Pega apenas a parte do token depois da palavra "Bearer"
 
     try {
+      // O TypeScript precisa de ter a certeza que o segredo é uma string
       const secret = process.env.SUPABASE_JWT_SECRET as string;
       
-      // 👇 A CORREÇÃO ESTÁ AQUI: { algorithms: ['HS256'] }
+      // 👇 A CORREÇÃO CRÍTICA ESTÁ AQUI: { algorithms: ['HS256'] }
       const decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
       
-      // Coloca os dados do utilizador dentro da requisição para podermos usar no código depois
+      // Coloca os dados do utilizador dentro da requisição
       request.user = decoded; 
       return true;
     } catch (error: any) {
