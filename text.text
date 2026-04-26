@@ -1,0 +1,9 @@
+src/
+ ┣ core/               # Códigos globais e infraestrutura
+ ┃ ┗ prisma/           # Serviço de conexão com a base de dados
+ ┣ modules/            # Os seus domínios de negócio (DDD)
+ ┃ ┣ orders/           # Onde vamos colocar a lógica de "place_order"
+ ┃ ┣ inventory/        # Onde faremos a baixa de estoque
+ ┃ ┗ auth/             # Validação do token do Supabase
+ ┣ app.module.ts
+ ┗ main.ts
