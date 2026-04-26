@@ -13,15 +13,16 @@ export class SupabaseGuard implements CanActivate {
 
     const token = authHeader.split(' ')[1]; // Pega apenas a parte do token depois da palavra "Bearer"
 
-   try {
-      // O truque do 'as string' garante que o TypeScript não reclama do .env
+    try {
       const secret = process.env.SUPABASE_JWT_SECRET as string;
+      
+      // 👇 A CORREÇÃO ESTÁ AQUI: { algorithms: ['HS256'] }
       const decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
       
+      // Coloca os dados do utilizador dentro da requisição para podermos usar no código depois
       request.user = decoded; 
       return true;
     } catch (error: any) {
-      // 👇 AGORA O SERVIDOR VAI DIZER-NOS A VERDADE NO LOG DO RENDER:
       console.error('🚨 Erro na validação do JWT:', error.message);
       throw new UnauthorizedException(`Falha de segurança: ${error.message}`);
     }
