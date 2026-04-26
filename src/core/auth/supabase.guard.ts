@@ -1,9 +1,8 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
-import * as jwt from 'jsonwebtoken';
 
 @Injectable()
 export class SupabaseGuard implements CanActivate {
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
     const authHeader = request.headers.authorization;
 
@@ -11,22 +10,38 @@ export class SupabaseGuard implements CanActivate {
       throw new UnauthorizedException('Token de autenticação não fornecido.');
     }
 
-    const token = authHeader.split(' ')[1];
+    const token = authHeader.split(' ')[1]; // Pega apenas a parte do token
 
     try {
-      const secret = process.env.SUPABASE_JWT_SECRET as string;
+      const supabaseUrl = process.env.SUPABASE_URL;
+      const anonKey = process.env.SUPABASE_ANON_KEY;
+
+      if (!supabaseUrl || !anonKey) {
+         console.error('🚨 Faltam as variáveis SUPABASE_URL ou SUPABASE_ANON_KEY no Render.');
+         throw new Error("Configuração do servidor incompleta.");
+      }
+
+      // Vamos bater na porta do Supabase e perguntar: "Este token é vosso?"
+      const response = await fetch(`${supabaseUrl}/auth/v1/user`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'apikey': anonKey
+        }
+      });
+
+      if (!response.ok) {
+         throw new Error("Token rejeitado ou expirado segundo o Supabase.");
+      }
+
+      const user = await response.json();
       
-      // 👇 MODO ESPIÃO: Vamos ler o cabeçalho do token antes de o validar
-      const espiao = jwt.decode(token, { complete: true });
-      console.log('🕵️ CABEÇALHO DO TOKEN:', espiao?.header);
-      
-      // 👇 A validação com a regra estrita
-      const decoded = jwt.verify(token, secret, { algorithms: ['HS256', 'ES256'] });
-      
-      request.user = decoded; 
+      // Se o Supabase disse "OK", deixamos passar e guardamos os dados!
+      request.user = user; 
       return true;
+
     } catch (error: any) {
-      console.error('🚨 Erro na validação do JWT:', error.message);
+      console.error('🚨 Erro na validação Direta:', error.message);
       throw new UnauthorizedException(`Falha de segurança: ${error.message}`);
     }
   }
