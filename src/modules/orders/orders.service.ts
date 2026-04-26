@@ -10,7 +10,7 @@ export class OrdersService {
   constructor(private readonly prisma: PrismaService) {}
 
   // ==========================================
-  // PDV SALE (Blindagem Total com SQL Direto)
+  // PDV SALE (Venda Direta - Blindagem Total + Supabase Auth)
   // ==========================================
   async processPosSale(tenantId: string, data: any) {
     const customerName = data.p_customer_name || data.customerName || 'Consumidor Final';
@@ -19,11 +19,24 @@ export class OrdersService {
     const items = data.p_items || data.items || [];
     
     let sessionId = data.p_cash_session_id || data.cashSessionId || data.sessionId;
+    
+    // Captura o ID do usuário que está fazendo a venda. 
+    // Se não vier no payload, usamos o tenantId como fallback garantido (pois é um UUID válido)
+    const authUserId = data.userId || data.staffId || data.auth_user_id || tenantId;
 
     if (items.length === 0) throw new BadRequestException('A venda não possui itens.');
 
     try {
       return await this.prisma.$transaction(async (tx) => {
+        // 🛡️ INJEÇÃO DE CONTEXTO SUPABASE (A MÁGICA ACONTECE AQUI) 🛡️
+        // Injeta o ID do usuário na sessão atual do banco. 
+        // Isso faz com que a função auth.uid() do Supabase encontre um valor e a Trigger não quebre!
+        await tx.$executeRawUnsafe(`
+          SELECT 
+            set_config('request.jwt.claims', '{"sub": "${authUserId}"}', true),
+            set_config('request.jwt.claim.sub', '${authUserId}', true);
+        `);
+
         // 1. Garantir que a Sessão de Caixa existe
         if (!sessionId) {
           const activeSession = await tx.cash_sessions.findFirst({
@@ -113,9 +126,7 @@ export class OrdersService {
           });
         }
 
-        // 5. REGISTRAR TRANSAÇÃO (SOLUÇÃO DE OURO: Bypass do Prisma)
-        // Ao invés de usar prisma.transactions.create que estava gerando o erro de Null Constraint,
-        // usamos o SQL puro formatado que injeta os dados direto no PostgreSQL igual à sua função.
+        // 5. REGISTRAR TRANSAÇÃO FINANCEIRA
         if (sessionId) {
           await tx.$executeRaw`
             INSERT INTO public.transactions (
@@ -125,7 +136,6 @@ export class OrdersService {
             )
           `;
         } else {
-          // Se de forma alguma houver sessão, envia a transação sem session_id
           await tx.$executeRaw`
             INSERT INTO public.transactions (
               tenant_id, order_id, amount, method, items_summary, status, cashier_name
@@ -148,7 +158,15 @@ export class OrdersService {
   // ==========================================
   async placeOrder(tenantId: string, data: any) {
     const { tableId, type, items, deliveryInfo } = data;
+    const authUserId = data.userId || data.staffId || tenantId;
+
     return await this.prisma.$transaction(async (tx) => {
+      // Injeta Auth Context também na criação via mesa
+      await tx.$executeRawUnsafe(`
+        SELECT set_config('request.jwt.claims', '{"sub": "${authUserId}"}', true),
+               set_config('request.jwt.claim.sub', '${authUserId}', true);
+      `);
+
       const order = await tx.orders.create({ data: { tenant_id: tenantId, table_id: tableId || null, order_type: type || 'DINE_IN', status: 'PENDING', is_paid: false, delivery_info: deliveryInfo || null } });
       for (const item of items) {
         const pid = item.productId || item.id || item.inventoryItemId;

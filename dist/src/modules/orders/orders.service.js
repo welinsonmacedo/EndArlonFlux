@@ -22,10 +22,16 @@ let OrdersService = class OrdersService {
         const cashierName = data.p_cashier_name || data.cashierName || 'Sistema';
         const items = data.p_items || data.items || [];
         let sessionId = data.p_cash_session_id || data.cashSessionId || data.sessionId;
+        const authUserId = data.userId || data.staffId || data.auth_user_id || tenantId;
         if (items.length === 0)
             throw new common_1.BadRequestException('A venda não possui itens.');
         try {
             return await this.prisma.$transaction(async (tx) => {
+                await tx.$executeRawUnsafe(`
+          SELECT 
+            set_config('request.jwt.claims', '{"sub": "${authUserId}"}', true),
+            set_config('request.jwt.claim.sub', '${authUserId}', true);
+        `);
                 if (!sessionId) {
                     const activeSession = await tx.cash_sessions.findFirst({
                         where: { tenant_id: tenantId, status: 'OPEN' },
@@ -133,7 +139,12 @@ let OrdersService = class OrdersService {
     }
     async placeOrder(tenantId, data) {
         const { tableId, type, items, deliveryInfo } = data;
+        const authUserId = data.userId || data.staffId || tenantId;
         return await this.prisma.$transaction(async (tx) => {
+            await tx.$executeRawUnsafe(`
+        SELECT set_config('request.jwt.claims', '{"sub": "${authUserId}"}', true),
+               set_config('request.jwt.claim.sub', '${authUserId}', true);
+      `);
             const order = await tx.orders.create({ data: { tenant_id: tenantId, table_id: tableId || null, order_type: type || 'DINE_IN', status: 'PENDING', is_paid: false, delivery_info: deliveryInfo || null } });
             for (const item of items) {
                 const pid = item.productId || item.id || item.inventoryItemId;
