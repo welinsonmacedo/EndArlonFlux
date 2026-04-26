@@ -22,9 +22,8 @@ let OrdersService = class OrdersService {
         const cashierName = data.p_cashier_name || data.cashierName || 'Sistema';
         const items = data.p_items || data.items || [];
         let sessionId = data.p_cash_session_id || data.cashSessionId || data.sessionId;
-        if (items.length === 0) {
+        if (items.length === 0)
             throw new common_1.BadRequestException('A venda não possui itens.');
-        }
         try {
             return await this.prisma.$transaction(async (tx) => {
                 if (!sessionId) {
@@ -34,11 +33,10 @@ let OrdersService = class OrdersService {
                     });
                     sessionId = activeSession?.id;
                 }
-                if (!sessionId) {
-                    throw new common_1.BadRequestException('ERRO: Não existe caixa aberto para este restaurante.');
-                }
+                if (!sessionId)
+                    throw new common_1.BadRequestException('ERRO: Não existe caixa aberto.');
                 let totalAmount = 0;
-                const itemsToCreate = [];
+                const processedItems = [];
                 for (const item of items) {
                     const pid = item.productId || item.id || item.inventoryItemId;
                     if (!pid)
@@ -71,9 +69,8 @@ let OrdersService = class OrdersService {
                         };
                     }
                     const qty = Number(item.quantity || 1);
-                    const subtotal = pInfo.price * qty;
-                    totalAmount += subtotal;
-                    itemsToCreate.push({ ...pInfo, qty, subtotal, notes: item.notes || '' });
+                    totalAmount += (pInfo.price * qty);
+                    processedItems.push({ ...pInfo, qty, subtotal: (pInfo.price * qty) });
                 }
                 const order = await tx.orders.create({
                     data: {
@@ -85,7 +82,7 @@ let OrdersService = class OrdersService {
                         total_amount: totalAmount,
                     },
                 });
-                for (const it of itemsToCreate) {
+                for (const it of processedItems) {
                     if (it.invId) {
                         await tx.inventory_items.update({
                             where: { id: it.invId },
@@ -99,37 +96,34 @@ let OrdersService = class OrdersService {
                             product_id: it.id,
                             inventory_item_id: it.invId,
                             quantity: it.qty,
-                            notes: it.notes,
-                            status: 'DELIVERED',
                             product_name: it.name,
                             product_type: it.type,
                             product_price: it.price,
                             product_cost_price: it.cost,
                             unit_price: it.price,
                             total_price: it.subtotal,
+                            status: 'DELIVERED',
                         },
                     });
                 }
-                const transactionData = {
-                    tenant_id: tenantId,
-                    order_id: order.id,
-                    cash_session_id: sessionId,
-                    amount: totalAmount,
-                    method: String(paymentMethod),
-                    items_summary: 'Venda Balcão (PDV)',
-                    status: 'COMPLETED',
-                    cashier_name: cashierName,
-                };
-                console.log('DEBUG: Tentando criar transação com:', transactionData);
                 await tx.transactions.create({
-                    data: transactionData,
+                    data: {
+                        tenant_id: tenantId,
+                        order_id: order.id,
+                        cash_session_id: sessionId,
+                        amount: totalAmount,
+                        method: paymentMethod,
+                        items_summary: 'Venda Balcão (PDV)',
+                        status: 'COMPLETED',
+                        cashier_name: cashierName,
+                    },
                 });
                 return { success: true, order_id: order.id, total: totalAmount };
             });
         }
         catch (error) {
-            console.error('🚨 ERRO FATAL PDV:', error);
-            throw new common_1.BadRequestException(error.message || 'Erro interno no servidor');
+            console.error('🚨 ERRO NO PROCESSAMENTO PDV:', error);
+            throw new common_1.BadRequestException(error.message);
         }
     }
     async placeOrder(tenantId, data) {
@@ -137,11 +131,14 @@ let OrdersService = class OrdersService {
         return await this.prisma.$transaction(async (tx) => {
             const order = await tx.orders.create({ data: { tenant_id: tenantId, table_id: tableId || null, order_type: type || 'DINE_IN', status: 'PENDING', is_paid: false, delivery_info: deliveryInfo || null } });
             for (const item of items) {
-                const pid = item.productId || item.id;
+                const pid = item.productId || item.id || item.inventoryItemId;
                 if (!pid)
                     continue;
                 const product = await tx.products.findFirst({ where: { tenant_id: tenantId, OR: [{ id: pid }, { linked_inventory_item_id: pid }] } });
                 if (product) {
+                    const invId = product.linked_inventory_item_id;
+                    if (invId)
+                        await tx.inventory_items.update({ where: { id: invId }, data: { quantity: { decrement: item.quantity } } });
                     await tx.order_items.create({ data: { tenant_id: tenantId, order_id: order.id, product_id: product.id, quantity: item.quantity, product_name: product.name, product_price: Number(product.price || 0), product_type: product.type || 'KITCHEN', status: 'PENDING' } });
                 }
             }
@@ -154,11 +151,6 @@ let OrdersService = class OrdersService {
         return { success: true };
     }
     async cancelOrder(tenantId, orderId) {
-        const items = await this.prisma.order_items.findMany({ where: { order_id: orderId, tenant_id: tenantId } });
-        for (const item of items) {
-            if (item.inventory_item_id)
-                await this.prisma.inventory_items.update({ where: { id: item.inventory_item_id }, data: { quantity: { increment: item.quantity } } });
-        }
         await this.prisma.orders.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
         return { success: true };
     }
