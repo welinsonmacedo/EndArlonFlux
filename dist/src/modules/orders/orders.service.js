@@ -20,8 +20,9 @@ let OrdersService = class OrdersService {
         const { p_customer_name, p_method, p_cashier_name } = data;
         const items = data.p_items || data.items || [];
         let sessionId = data.p_cash_session_id || data.cashSessionId || data.sessionId;
-        if (!items || items.length === 0)
+        if (!items || items.length === 0) {
             throw new common_1.BadRequestException('A venda não possui itens.');
+        }
         try {
             return await this.prisma.$transaction(async (tx) => {
                 if (!sessionId) {
@@ -31,60 +32,51 @@ let OrdersService = class OrdersService {
                     });
                     sessionId = activeSession?.id;
                 }
-                if (!sessionId)
-                    throw new common_1.BadRequestException('Não existe sessão de caixa aberta.');
+                if (!sessionId) {
+                    throw new common_1.BadRequestException('Venda bloqueada: Nenhuma sessão de caixa aberta encontrada.');
+                }
                 let v_total_amount = 0;
                 const processedItems = [];
                 for (const item of items) {
                     const pid = item.productId || item.id || item.inventoryItemId;
                     if (!pid)
                         continue;
-                    let v_product_name = 'Produto Desconhecido';
-                    let v_product_type = 'KITCHEN';
-                    let v_product_price = 0;
-                    let v_cost_price = 0;
-                    let v_final_product_id = null;
-                    let v_final_inventory_id = null;
                     const product = await tx.products.findFirst({
-                        where: { tenant_id: tenantId, OR: [{ id: pid }, { linked_inventory_item_id: pid }] },
+                        where: {
+                            tenant_id: tenantId,
+                            OR: [{ id: pid }, { linked_inventory_item_id: pid }]
+                        },
                     });
+                    let itemData;
                     if (product) {
-                        v_product_name = product.name;
-                        v_product_type = product.type;
-                        v_product_price = Number(product.price || 0);
-                        v_cost_price = Number(product.cost_price || 0);
-                        v_final_product_id = product.id;
-                        v_final_inventory_id = product.linked_inventory_item_id;
+                        itemData = {
+                            name: product.name,
+                            type: product.type || 'KITCHEN',
+                            price: Number(product.price || 0),
+                            costPrice: Number(product.cost_price || 0),
+                            inventoryId: product.linked_inventory_item_id,
+                            productId: product.id
+                        };
                     }
                     else {
                         const invItem = await tx.inventory_items.findFirst({
-                            where: { id: pid, tenant_id: tenantId },
+                            where: { id: pid, tenant_id: tenantId }
                         });
-                        if (invItem) {
-                            v_product_name = invItem.name;
-                            v_product_type = 'RESALE';
-                            v_product_price = Number(invItem.sale_price || 0);
-                            v_cost_price = Number(invItem.cost_price || 0);
-                            v_final_inventory_id = invItem.id;
-                        }
-                        else {
+                        if (!invItem)
                             throw new common_1.NotFoundException(`Item ${pid} não localizado.`);
-                        }
+                        itemData = {
+                            name: invItem.name,
+                            type: 'RESALE',
+                            price: Number(invItem.sale_price || 0),
+                            costPrice: Number(invItem.cost_price || 0),
+                            inventoryId: invItem.id,
+                            productId: null
+                        };
                     }
                     const qty = Number(item.quantity || 1);
-                    const totalPrice = v_product_price * qty;
+                    const totalPrice = itemData.price * qty;
                     v_total_amount += totalPrice;
-                    processedItems.push({
-                        productId: v_final_product_id,
-                        inventoryId: v_final_inventory_id,
-                        name: v_product_name,
-                        type: v_product_type,
-                        price: v_product_price,
-                        costPrice: v_cost_price,
-                        qty: qty,
-                        totalPrice: totalPrice,
-                        notes: item.notes || ''
-                    });
+                    processedItems.push({ ...itemData, qty, totalPrice, notes: item.notes || '' });
                 }
                 const order = await tx.orders.create({
                     data: {
@@ -121,20 +113,23 @@ let OrdersService = class OrdersService {
                         },
                     });
                 }
-                const itemsSummary = 'Venda Balcão (PDV)';
-                const method = p_method || 'DINHEIRO';
-                const cashier = p_cashier_name || 'Sistema';
-                await tx.$executeRawUnsafe(`
-          INSERT INTO public.transactions 
-          (id, tenant_id, order_id, cash_session_id, amount, method, items_summary, status, cashier_name, type, category, created_at)
-          VALUES 
-          (gen_random_uuid(), '${tenantId}', '${order.id}', '${sessionId}', ${v_total_amount}, '${method}', '${itemsSummary}', 'COMPLETED', '${cashier}', 'INCOME', 'SALE', NOW())
-        `);
+                await tx.transactions.create({
+                    data: {
+                        tenant_id: tenantId,
+                        order_id: order.id,
+                        cash_session_id: sessionId,
+                        amount: v_total_amount,
+                        method: p_method || 'DINHEIRO',
+                        items_summary: 'Venda Balcão (PDV)',
+                        status: 'COMPLETED',
+                        cashier_name: p_cashier_name || 'Sistema',
+                    },
+                });
                 return { success: true, order_id: order.id, total: v_total_amount };
             });
         }
         catch (error) {
-            console.error('🚨 Erro Crítico PDV:', error.message);
+            console.error('🚨 Erro PDV:', error.message);
             throw new common_1.BadRequestException(error.message);
         }
     }
@@ -145,9 +140,7 @@ let OrdersService = class OrdersService {
                 data: { tenant_id: tenantId, table_id: tableId || null, order_type: type || 'DINE_IN', status: 'PENDING', is_paid: false, delivery_info: deliveryInfo || null },
             });
             for (const item of items) {
-                const pid = item.productId || item.id || item.inventoryItemId;
-                if (!pid)
-                    continue;
+                const pid = item.productId || item.id;
                 const product = await tx.products.findFirst({ where: { tenant_id: tenantId, OR: [{ id: pid }, { linked_inventory_item_id: pid }] } });
                 if (product) {
                     const invId = product.linked_inventory_item_id;
