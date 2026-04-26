@@ -11,16 +11,18 @@ export class SupabaseGuard implements CanActivate {
       throw new UnauthorizedException('Token de autenticação não fornecido.');
     }
 
-    const token = authHeader.split(' ')[1]; // Pega apenas a parte do token depois da palavra "Bearer"
+    const token = authHeader.split(' ')[1];
 
     try {
-      // O TypeScript precisa de ter a certeza que o segredo é uma string
       const secret = process.env.SUPABASE_JWT_SECRET as string;
       
-      // 👇 A CORREÇÃO CRÍTICA ESTÁ AQUI: { algorithms: ['HS256'] }
+      // 👇 MODO ESPIÃO: Vamos ler o cabeçalho do token antes de o validar
+      const espiao = jwt.decode(token, { complete: true });
+      console.log('🕵️ CABEÇALHO DO TOKEN:', espiao?.header);
+      
+      // 👇 A validação com a regra estrita
       const decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
       
-      // Coloca os dados do utilizador dentro da requisição
       request.user = decoded; 
       return true;
     } catch (error: any) {
