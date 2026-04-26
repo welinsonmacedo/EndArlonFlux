@@ -10,7 +10,7 @@ export class OrdersService {
   constructor(private readonly prisma: PrismaService) {}
 
   // ==========================================
-  // PDV SALE (Venda Direta de Balcão)
+  // PDV SALE (Venda Direta)
   // ==========================================
   async processPosSale(tenantId: string, data: any) {
     const { customerName, method, items, cashierName } = data;
@@ -25,14 +25,14 @@ export class OrdersService {
         const processedItems = [];
 
         for (const item of items) {
-          // Captura o ID enviado pelo Front (id ou inventoryItemId)
-          const pid = item.id || item.inventoryItemId || item.productId;
+          // Captura qualquer variação de nome de ID vinda do Front
+          const pid = item.productId || item.id || item.inventoryItemId;
           
           if (!pid) {
             throw new BadRequestException('ID do produto não fornecido.');
           }
 
-          // 🛡️ BUSCA BLINDADA: Procura por ID do Produto OU por vínculo de Inventário
+          // 🛡️ BUSCA BLINDADA: Tenta achar o produto pelo ID dele OU pelo ID do Insumo vinculado
           const product = await tx.products.findFirst({
             where: { 
               tenant_id: tenantId,
@@ -44,8 +44,8 @@ export class OrdersService {
           });
 
           if (!product) {
-            console.error(`❌ Produto não encontrado. ID: ${pid} | Tenant: ${tenantId}`);
-            throw new NotFoundException(`Produto ${pid} não localizado no sistema.`);
+            console.error(`❌ Produto não encontrado. ID pesquisado: ${pid} | Tenant: ${tenantId}`);
+            throw new NotFoundException(`Produto ${pid} não localizado no sistema para este restaurante.`);
           }
 
           const unitPrice = Number(product.price || 0);
@@ -62,7 +62,7 @@ export class OrdersService {
           });
         }
 
-        // 1. Criar o pedido principal
+        // 1. Criar o pedido (orders)
         const order = await tx.orders.create({
           data: {
             tenant_id: tenantId,
@@ -98,7 +98,7 @@ export class OrdersService {
           });
         }
 
-        // 3. Registro Financeiro
+        // 3. Registrar Transação Financeira
         await tx.transactions.create({
           data: {
             tenant_id: tenantId,
@@ -113,13 +113,13 @@ export class OrdersService {
         return { success: true, orderId: order.id, total: totalAmount };
       });
     } catch (error: any) {
-      console.error('🚨 Erro Crítico no PDV:', error);
+      console.error('🚨 Erro Crítico PDV:', error);
       throw new BadRequestException(error.message || 'Erro ao processar venda');
     }
   }
 
   // ==========================================
-  // PLACE ORDER (Mesa / Delivery)
+  // PLACE ORDER (Mesas / Delivery)
   // ==========================================
   async placeOrder(tenantId: string, data: any) {
     const { tableId, type, items, deliveryInfo } = data;
@@ -139,14 +139,11 @@ export class OrdersService {
         });
 
         for (const item of items) {
-          const pid = item.productId || item.id;
+          const pid = item.productId || item.id || item.inventoryItemId;
           const product = await tx.products.findFirst({
             where: { 
               tenant_id: tenantId,
-              OR: [
-                { id: pid },
-                { linked_inventory_item_id: pid }
-              ]
+              OR: [{ id: pid }, { linked_inventory_item_id: pid }]
             }
           });
 
@@ -180,7 +177,9 @@ export class OrdersService {
     }
   }
 
-  // Métodos processPayment, cancelOrder, dispatchOrder e updateItemStatus seguem a mesma lógica...
+  // ==========================================
+  // PAYMENT / FINANCEIRO
+  // ==========================================
   async processPayment(tenantId: string, data: any) {
     const { tableId, orderId, amount, cashierName, method } = data;
     try {
@@ -218,6 +217,9 @@ export class OrdersService {
     }
   }
 
+  // ==========================================
+  // CANCELAMENTO / STATUS
+  // ==========================================
   async cancelOrder(tenantId: string, orderId: string) {
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -244,7 +246,7 @@ export class OrdersService {
   }
 
   async dispatchOrder(tenantId: string, orderId: string, courierInfo: any) {
-    const result = await this.prisma.orders.updateMany({
+    await this.prisma.orders.updateMany({
       where: { id: orderId, tenant_id: tenantId },
       data: { status: 'DISPATCHED', delivery_info: courierInfo || null },
     });

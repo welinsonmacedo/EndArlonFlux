@@ -26,7 +26,7 @@ let OrdersService = class OrdersService {
                 let totalAmount = 0;
                 const processedItems = [];
                 for (const item of items) {
-                    const pid = item.id || item.inventoryItemId || item.productId;
+                    const pid = item.productId || item.id || item.inventoryItemId;
                     if (!pid) {
                         throw new common_1.BadRequestException('ID do produto não fornecido.');
                     }
@@ -40,8 +40,8 @@ let OrdersService = class OrdersService {
                         },
                     });
                     if (!product) {
-                        console.error(`❌ Produto não encontrado. ID: ${pid} | Tenant: ${tenantId}`);
-                        throw new common_1.NotFoundException(`Produto ${pid} não localizado no sistema.`);
+                        console.error(`❌ Produto não encontrado. ID pesquisado: ${pid} | Tenant: ${tenantId}`);
+                        throw new common_1.NotFoundException(`Produto ${pid} não localizado no sistema para este restaurante.`);
                     }
                     const unitPrice = Number(product.price || 0);
                     const qty = Number(item.quantity || 1);
@@ -100,7 +100,7 @@ let OrdersService = class OrdersService {
             });
         }
         catch (error) {
-            console.error('🚨 Erro Crítico no PDV:', error);
+            console.error('🚨 Erro Crítico PDV:', error);
             throw new common_1.BadRequestException(error.message || 'Erro ao processar venda');
         }
     }
@@ -121,14 +121,11 @@ let OrdersService = class OrdersService {
                     },
                 });
                 for (const item of items) {
-                    const pid = item.productId || item.id;
+                    const pid = item.productId || item.id || item.inventoryItemId;
                     const product = await tx.products.findFirst({
                         where: {
                             tenant_id: tenantId,
-                            OR: [
-                                { id: pid },
-                                { linked_inventory_item_id: pid }
-                            ]
+                            OR: [{ id: pid }, { linked_inventory_item_id: pid }]
                         }
                     });
                     const invId = product?.linked_inventory_item_id;
@@ -222,7 +219,7 @@ let OrdersService = class OrdersService {
         }
     }
     async dispatchOrder(tenantId, orderId, courierInfo) {
-        const result = await this.prisma.orders.updateMany({
+        await this.prisma.orders.updateMany({
             where: { id: orderId, tenant_id: tenantId },
             data: { status: 'DISPATCHED', delivery_info: courierInfo || null },
         });
