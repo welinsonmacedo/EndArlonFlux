@@ -38,6 +38,9 @@ let OrdersService = class OrdersService {
                 const processedItems = [];
                 for (const item of items) {
                     const productId = item.id || item.productId;
+                    if (!productId) {
+                        throw new common_1.BadRequestException('ID do produto não fornecido em um dos itens.');
+                    }
                     const product = await tx.products.findUnique({
                         where: { id: productId, tenant_id: tenantId },
                     });
@@ -125,9 +128,10 @@ let OrdersService = class OrdersService {
                     const product = await tx.products.findUnique({
                         where: { id: productId, tenant_id: tenantId }
                     });
-                    if (item.inventory_item_id || product?.linked_inventory_item_id) {
+                    const inventoryId = item.inventory_item_id || product?.linked_inventory_item_id;
+                    if (inventoryId) {
                         await tx.inventory_items.update({
-                            where: { id: item.inventory_item_id || product?.linked_inventory_item_id },
+                            where: { id: inventoryId },
                             data: { quantity: { decrement: item.quantity } },
                         });
                     }
@@ -136,7 +140,7 @@ let OrdersService = class OrdersService {
                             tenant_id: tenantId,
                             order_id: order.id,
                             product_id: productId,
-                            inventory_item_id: item.inventory_item_id || product?.linked_inventory_item_id || null,
+                            inventory_item_id: inventoryId || null,
                             quantity: item.quantity,
                             product_name: product?.name || 'Produto',
                             product_price: Number(product?.price || 0),

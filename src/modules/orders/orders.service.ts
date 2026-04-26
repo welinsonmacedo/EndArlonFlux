@@ -41,8 +41,13 @@ export class OrdersService {
 
         // 1. Buscar preços e tipos reais no banco (Segurança e Correção de Valores)
         for (const item of items) {
+          // Ajuste Crítico: O seu Front envia 'id', o Back usava 'productId'
           const productId = item.id || item.productId;
           
+          if (!productId) {
+            throw new BadRequestException('ID do produto não fornecido em um dos itens.');
+          }
+
           const product = await tx.products.findUnique({
             where: { id: productId, tenant_id: tenantId },
           });
@@ -79,6 +84,7 @@ export class OrdersService {
 
         // 3. Criar itens e atualizar estoque
         for (const item of processedItems) {
+          // Baixar estoque se houver vínculo com inventário
           if (item.inventoryItemId) {
             await tx.inventory_items.update({
               where: { id: item.inventoryItemId },
@@ -89,13 +95,13 @@ export class OrdersService {
           await tx.order_items.create({
             data: {
               tenant_id: tenantId,
-              order_id: order.id, // ID direto para evitar erro de tipagem "never"
+              order_id: order.id, // ID direto evita erro 'never' do TS
               product_id: item.productId,
               inventory_item_id: item.inventoryItemId || null,
               quantity: item.quantity,
               product_name: item.name,
               product_price: item.price,
-              product_type: item.type,
+              product_type: item.type, // Resolve erro 'product_type is missing'
               status: 'COMPLETED',
             } as any,
           });
@@ -147,9 +153,11 @@ export class OrdersService {
             where: { id: productId, tenant_id: tenantId }
           });
 
-          if (item.inventory_item_id || product?.linked_inventory_item_id) {
+          const inventoryId = item.inventory_item_id || product?.linked_inventory_item_id;
+
+          if (inventoryId) {
             await tx.inventory_items.update({
-              where: { id: item.inventory_item_id || product?.linked_inventory_item_id },
+              where: { id: inventoryId },
               data: { quantity: { decrement: item.quantity } },
             });
           }
@@ -159,7 +167,7 @@ export class OrdersService {
               tenant_id: tenantId,
               order_id: order.id,
               product_id: productId,
-              inventory_item_id: item.inventory_item_id || product?.linked_inventory_item_id || null,
+              inventory_item_id: inventoryId || null,
               quantity: item.quantity,
               product_name: product?.name || 'Produto',
               product_price: Number(product?.price || 0),
@@ -226,7 +234,7 @@ export class OrdersService {
   }
 
   // ==========================================
-  // LOGICAS DE SUPORTE (Cancelamento/Status)
+  // CANCEL ORDER
   // ==========================================
   async cancelOrder(tenantId: string, orderId: string) {
     try {
@@ -258,6 +266,9 @@ export class OrdersService {
     }
   }
 
+  // ==========================================
+  // DISPATCH E STATUS
+  // ==========================================
   async dispatchOrder(tenantId: string, orderId: string, courierInfo: any) {
     const result = await this.prisma.orders.updateMany({
       where: { id: orderId, tenant_id: tenantId },
