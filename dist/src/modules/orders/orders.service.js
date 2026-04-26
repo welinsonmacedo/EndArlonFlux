@@ -48,15 +48,16 @@ let OrdersService = class OrdersService {
                             v_final_inventory_id = product.linked_inventory_item_id;
                         }
                     }
-                    if (v_product_name === 'Produto Desconhecido' && v_final_inventory_id) {
+                    if (v_product_name === 'Produto Desconhecido' && (v_inventory_item_id || v_final_inventory_id)) {
                         const invItem = await tx.inventory_items.findFirst({
-                            where: { id: v_final_inventory_id, tenant_id: tenantId },
+                            where: { id: v_inventory_item_id || v_final_inventory_id, tenant_id: tenantId },
                         });
                         if (invItem) {
                             v_product_name = invItem.name;
                             v_product_type = 'RESALE';
                             v_product_price = Number(invItem.sale_price || 0);
                             v_cost_price = Number(invItem.cost_price || 0);
+                            v_final_inventory_id = invItem.id;
                         }
                     }
                     const v_total_price = v_product_price * v_quantity;
@@ -124,7 +125,7 @@ let OrdersService = class OrdersService {
             });
         }
         catch (error) {
-            console.error('🚨 Erro PDV:', error.message);
+            console.error('🚨 Erro Crítico PDV:', error.message);
             throw new common_1.BadRequestException(error.message);
         }
     }
@@ -173,7 +174,7 @@ let OrdersService = class OrdersService {
         }
     }
     async processPayment(tenantId, data) {
-        const { p_order_id, amount, p_method, p_cashier_name, p_cash_session_id } = data;
+        const { p_order_id } = data;
         await this.prisma.orders.update({
             where: { id: p_order_id },
             data: { is_paid: true, status: 'COMPLETED' },
@@ -181,7 +182,10 @@ let OrdersService = class OrdersService {
         return { success: true };
     }
     async cancelOrder(tenantId, orderId) {
-        await this.prisma.orders.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
+        await this.prisma.orders.update({
+            where: { id: orderId },
+            data: { status: 'CANCELLED' }
+        });
         return { success: true };
     }
     async dispatchOrder(tenantId, orderId, courierInfo) {
