@@ -16,11 +16,22 @@ let OrdersService = class OrdersService {
     constructor(prisma) {
         this.prisma = prisma;
     }
+    validateItems(items) {
+        if (!items || items.length === 0) {
+            throw new common_1.BadRequestException('O pedido precisa ter itens.');
+        }
+    }
+    validatePaymentInput(tableId, orderId) {
+        if (!tableId && !orderId) {
+            throw new common_1.BadRequestException('Informe tableId ou orderId');
+        }
+        if (tableId && orderId) {
+            throw new common_1.BadRequestException('Não envie tableId e orderId juntos');
+        }
+    }
     async placeOrder(tenantId, data) {
         const { tableId, type, items, deliveryInfo } = data;
-        if (!items || items.length === 0) {
-            throw new common_1.BadRequestException('O pedido tem de conter itens.');
-        }
+        this.validateItems(items);
         try {
             const result = await this.prisma.$transaction(async (tx) => {
                 const order = await tx.orders.create({
@@ -30,10 +41,21 @@ let OrdersService = class OrdersService {
                         type: type || 'DINE_IN',
                         status: 'PENDING',
                         is_paid: false,
-                        delivery_info: deliveryInfo ? deliveryInfo : null,
+                        delivery_info: deliveryInfo || null,
                     },
                 });
-                for (const item of items) {
+                await Promise.all(items.map(async (item) => {
+                    if (item.inventoryItemId) {
+                        const inventory = await tx.inventory_items.findUnique({
+                            where: { id: item.inventoryItemId },
+                        });
+                        if (!inventory) {
+                            throw new common_1.NotFoundException(`Item de estoque não encontrado`);
+                        }
+                        if (inventory.quantity < item.quantity) {
+                            throw new common_1.BadRequestException(`Estoque insuficiente para ${item.name}`);
+                        }
+                    }
                     await tx.order_items.create({
                         data: {
                             tenant_id: tenantId,
@@ -52,27 +74,23 @@ let OrdersService = class OrdersService {
                         await tx.inventory_items.update({
                             where: { id: item.inventoryItemId },
                             data: {
-                                quantity: {
-                                    decrement: item.quantity,
-                                },
+                                quantity: { decrement: item.quantity },
                             },
                         });
                     }
-                }
+                }));
                 return order;
             });
             return { success: true, order: result };
         }
         catch (error) {
-            console.error('Erro ao processar pedido:', error);
-            throw new common_1.BadRequestException('Falha ao registar o pedido e processar estoque.');
+            console.error(error);
+            throw new common_1.BadRequestException(error.message || 'Erro ao criar pedido');
         }
     }
     async processPosSale(tenantId, data) {
-        const { customerName, method, items, cashierName } = data;
-        if (!items || items.length === 0) {
-            throw new common_1.BadRequestException('A venda do PDV tem de conter itens.');
-        }
+        const { items } = data;
+        this.validateItems(items);
         try {
             return await this.prisma.$transaction(async (tx) => {
                 const order = await tx.orders.create({
@@ -83,7 +101,15 @@ let OrdersService = class OrdersService {
                         is_paid: true,
                     },
                 });
-                for (const item of items) {
+                await Promise.all(items.map(async (item) => {
+                    if (item.inventoryItemId) {
+                        const inventory = await tx.inventory_items.findUnique({
+                            where: { id: item.inventoryItemId },
+                        });
+                        if (!inventory || inventory.quantity < item.quantity) {
+                            throw new common_1.BadRequestException(`Estoque insuficiente para ${item.name}`);
+                        }
+                    }
                     await tx.order_items.create({
                         data: {
                             tenant_id: tenantId,
@@ -91,54 +117,154 @@ let OrdersService = class OrdersService {
                             product_id: item.productId || null,
                             inventory_item_id: item.inventoryItemId || null,
                             quantity: item.quantity,
+                            product_name: item.name || 'Produto Balcão',
+                            product_price: item.salePrice || 0,
                             notes: item.notes || null,
                             status: 'COMPLETED',
                             product_type: item.type || 'KITCHEN',
-                            product_name: item.name || 'Produto Balcão',
-                            product_price: item.salePrice || 0,
                         },
                     });
                     if (item.inventoryItemId) {
                         await tx.inventory_items.update({
                             where: { id: item.inventoryItemId },
-                            data: { quantity: { decrement: item.quantity } },
+                            data: {
+                                quantity: { decrement: item.quantity },
+                            },
                         });
                     }
-                }
+                }));
                 return { success: true, order };
             });
         }
         catch (error) {
-            console.error('Erro ao processar venda no PDV:', error);
-            throw new common_1.BadRequestException('Falha ao registar a venda no PDV.');
+            console.error(error);
+            throw new common_1.BadRequestException('Erro no PDV');
         }
     }
     async processPayment(tenantId, data) {
-        const { tableId, amount, method, cashierName, orderId, specificOrderIds } = data;
+        const { tableId, orderId, amount, cashierName, method } = data;
+        this.validatePaymentInput(tableId, orderId);
         try {
             return await this.prisma.$transaction(async (tx) => {
                 if (tableId) {
                     await tx.orders.updateMany({
-                        where: { tenant_id: tenantId, table_id: tableId, is_paid: false },
-                        data: { is_paid: true, status: 'COMPLETED' },
+                        where: {
+                            tenant_id: tenantId,
+                            table_id: tableId,
+                            is_paid: false,
+                        },
+                        data: {
+                            is_paid: true,
+                            status: 'COMPLETED',
+                        },
                     });
                     await tx.restaurant_tables.update({
                         where: { id: tableId },
-                        data: { status: 'AVAILABLE', customer_name: null, access_code: null },
+                        data: {
+                            status: 'AVAILABLE',
+                            customer_name: null,
+                            access_code: null,
+                        },
                     });
                 }
-                else if (orderId) {
-                    await tx.orders.update({
-                        where: { id: orderId },
-                        data: { is_paid: true, status: 'COMPLETED' },
+                if (orderId) {
+                    const updated = await tx.orders.updateMany({
+                        where: { id: orderId, tenant_id: tenantId },
+                        data: {
+                            is_paid: true,
+                            status: 'COMPLETED',
+                        },
                     });
+                    if (updated.count === 0) {
+                        throw new common_1.NotFoundException('Pedido não encontrado');
+                    }
                 }
-                return { success: true, message: 'Pagamento registado com sucesso' };
+                await tx.transactions.create({
+                    data: {
+                        tenant_id: tenantId,
+                        table_id: tableId || null,
+                        order_id: orderId || null,
+                        amount: amount,
+                        method: method,
+                        cashier_name: cashierName || 'Sistema',
+                        status: 'COMPLETED'
+                    },
+                });
+                return { success: true };
             });
         }
         catch (error) {
-            console.error('Erro ao processar pagamento:', error);
-            throw new common_1.BadRequestException('Falha ao processar o pagamento.');
+            console.error(error);
+            throw new common_1.BadRequestException('Erro no pagamento');
+        }
+    }
+    async cancelOrder(tenantId, orderId) {
+        try {
+            return await this.prisma.$transaction(async (tx) => {
+                const items = await tx.order_items.findMany({
+                    where: { order_id: orderId, tenant_id: tenantId },
+                });
+                await Promise.all(items.map(async (item) => {
+                    if (item.inventory_item_id) {
+                        await tx.inventory_items.update({
+                            where: { id: item.inventory_item_id },
+                            data: {
+                                quantity: { increment: item.quantity },
+                            },
+                        });
+                    }
+                }));
+                const result = await tx.orders.updateMany({
+                    where: { id: orderId, tenant_id: tenantId },
+                    data: {
+                        deleted_at: new Date(),
+                        status: 'CANCELLED',
+                    },
+                });
+                if (result.count === 0) {
+                    throw new common_1.NotFoundException('Pedido não encontrado');
+                }
+                return { success: true };
+            });
+        }
+        catch (error) {
+            console.error(error);
+            throw new common_1.BadRequestException('Erro ao cancelar pedido');
+        }
+    }
+    async dispatchOrder(tenantId, orderId, courierInfo) {
+        try {
+            const result = await this.prisma.orders.updateMany({
+                where: { id: orderId, tenant_id: tenantId },
+                data: {
+                    status: 'DISPATCHED',
+                    delivery_info: courierInfo || null,
+                },
+            });
+            if (result.count === 0) {
+                throw new common_1.NotFoundException('Pedido não encontrado');
+            }
+            return { success: true };
+        }
+        catch (error) {
+            console.error(error);
+            throw new common_1.BadRequestException('Erro ao despachar pedido');
+        }
+    }
+    async updateItemStatus(tenantId, itemId, status) {
+        try {
+            const result = await this.prisma.order_items.updateMany({
+                where: { id: itemId, tenant_id: tenantId },
+                data: { status },
+            });
+            if (result.count === 0) {
+                throw new common_1.NotFoundException('Item não encontrado');
+            }
+            return { success: true };
+        }
+        catch (error) {
+            console.error(error);
+            throw new common_1.BadRequestException('Erro ao atualizar item');
         }
     }
 };

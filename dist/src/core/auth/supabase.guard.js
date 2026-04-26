@@ -51,12 +51,14 @@ let SupabaseGuard = class SupabaseGuard {
         }
         const token = authHeader.split(' ')[1];
         try {
-            const decoded = jwt.verify(token, process.env.SUPABASE_JWT_SECRET);
+            const secret = process.env.SUPABASE_JWT_SECRET;
+            const decoded = jwt.verify(token, secret);
             request.user = decoded;
             return true;
         }
         catch (error) {
-            throw new common_1.UnauthorizedException('Token inválido ou expirado.');
+            console.error('🚨 Erro na validação do JWT:', error.message);
+            throw new common_1.UnauthorizedException(`Falha de segurança: ${error.message}`);
         }
     }
 };

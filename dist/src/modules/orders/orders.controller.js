@@ -20,21 +20,34 @@ let OrdersController = class OrdersController {
     constructor(ordersService) {
         this.ordersService = ordersService;
     }
-    async placeOrder(tenantId, body) {
+    validateTenant(tenantId) {
         if (!tenantId) {
-            return { success: false, message: 'Tenant ID é obrigatório' };
+            throw new common_1.BadRequestException('Tenant ID é obrigatório');
         }
+    }
+    async placeOrder(tenantId, body) {
+        this.validateTenant(tenantId);
         return this.ordersService.placeOrder(tenantId, body);
     }
     async processPosSale(tenantId, body) {
-        if (!tenantId)
-            return { success: false, message: 'Tenant ID é obrigatório' };
+        this.validateTenant(tenantId);
         return this.ordersService.processPosSale(tenantId, body);
     }
     async processPayment(tenantId, body) {
-        if (!tenantId)
-            return { success: false, message: 'Tenant ID é obrigatório' };
+        this.validateTenant(tenantId);
         return this.ordersService.processPayment(tenantId, body);
+    }
+    async cancelOrder(tenantId, orderId) {
+        this.validateTenant(tenantId);
+        return this.ordersService.cancelOrder(tenantId, orderId);
+    }
+    async dispatchOrder(tenantId, orderId, courierInfo) {
+        this.validateTenant(tenantId);
+        return this.ordersService.dispatchOrder(tenantId, orderId, courierInfo);
+    }
+    async updateItemStatus(tenantId, itemId, status) {
+        this.validateTenant(tenantId);
+        return this.ordersService.updateItemStatus(tenantId, itemId, status);
     }
 };
 exports.OrdersController = OrdersController;
@@ -68,6 +81,35 @@ __decorate([
     __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", Promise)
 ], OrdersController.prototype, "processPayment", null);
+__decorate([
+    (0, common_1.Patch)(':id/cancel'),
+    (0, common_1.UseGuards)(supabase_guard_1.SupabaseGuard),
+    __param(0, (0, common_1.Headers)('x-tenant-id')),
+    __param(1, (0, common_1.Param)('id')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String]),
+    __metadata("design:returntype", Promise)
+], OrdersController.prototype, "cancelOrder", null);
+__decorate([
+    (0, common_1.Patch)(':id/dispatch'),
+    (0, common_1.UseGuards)(supabase_guard_1.SupabaseGuard),
+    __param(0, (0, common_1.Headers)('x-tenant-id')),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)('courierInfo')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, Object]),
+    __metadata("design:returntype", Promise)
+], OrdersController.prototype, "dispatchOrder", null);
+__decorate([
+    (0, common_1.Patch)('items/:itemId/status'),
+    (0, common_1.UseGuards)(supabase_guard_1.SupabaseGuard),
+    __param(0, (0, common_1.Headers)('x-tenant-id')),
+    __param(1, (0, common_1.Param)('itemId')),
+    __param(2, (0, common_1.Body)('status')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, String]),
+    __metadata("design:returntype", Promise)
+], OrdersController.prototype, "updateItemStatus", null);
 exports.OrdersController = OrdersController = __decorate([
     (0, common_1.Controller)('api/orders'),
     __metadata("design:paramtypes", [orders_service_1.OrdersService])

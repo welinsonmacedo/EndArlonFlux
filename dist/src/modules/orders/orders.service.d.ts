@@ -2,6 +2,8 @@ import { PrismaService } from '../../core/prisma/prisma.service';
 export declare class OrdersService {
     private readonly prisma;
     constructor(prisma: PrismaService);
+    private validateItems;
+    private validatePaymentInput;
     placeOrder(tenantId: string, data: any): Promise<{
         success: boolean;
         order: {
@@ -44,6 +46,14 @@ export declare class OrdersService {
     }>;
     processPayment(tenantId: string, data: any): Promise<{
         success: boolean;
-        message: string;
+    }>;
+    cancelOrder(tenantId: string, orderId: string): Promise<{
+        success: boolean;
+    }>;
+    dispatchOrder(tenantId: string, orderId: string, courierInfo: any): Promise<{
+        success: boolean;
+    }>;
+    updateItemStatus(tenantId: string, itemId: string, status: string): Promise<{
+        success: boolean;
     }>;
 }

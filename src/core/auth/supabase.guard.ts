@@ -13,15 +13,17 @@ export class SupabaseGuard implements CanActivate {
 
     const token = authHeader.split(' ')[1]; // Pega apenas a parte do token depois da palavra "Bearer"
 
-    try {
-      // Verifica se o token foi assinado pelo seu Supabase e se não expirou
-      const decoded = jwt.verify(token, process.env.SUPABASE_JWT_SECRET);
+   try {
+      // O truque do 'as string' garante que o TypeScript não reclama do .env
+      const secret = process.env.SUPABASE_JWT_SECRET as string;
+      const decoded = jwt.verify(token, secret);
       
-      // Coloca os dados do utilizador dentro da requisição para podermos usar no código depois
       request.user = decoded; 
       return true;
-    } catch (error) {
-      throw new UnauthorizedException('Token inválido ou expirado.');
+    } catch (error: any) {
+      // 👇 AGORA O SERVIDOR VAI DIZER-NOS A VERDADE NO LOG DO RENDER:
+      console.error('🚨 Erro na validação do JWT:', error.message);
+      throw new UnauthorizedException(`Falha de segurança: ${error.message}`);
     }
   }
 }
