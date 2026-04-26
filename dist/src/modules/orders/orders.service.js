@@ -68,7 +68,7 @@ let OrdersService = class OrdersService {
                             v_final_inventory_id = invItem.id;
                         }
                         else {
-                            throw new common_1.NotFoundException(`Item ${pid} não localizado em Produtos ou Estoque.`);
+                            throw new common_1.NotFoundException(`Item ${pid} não localizado.`);
                         }
                     }
                     const qty = Number(item.quantity || 1);
@@ -108,7 +108,7 @@ let OrdersService = class OrdersService {
                             tenant_id: tenantId,
                             order_id: order.id,
                             product_id: pItem.productId,
-                            inventory_item_id: pItem.inventoryId || null,
+                            inventory_item_id: pItem.inventoryId,
                             quantity: pItem.qty,
                             notes: pItem.notes,
                             status: 'DELIVERED',
@@ -121,20 +121,15 @@ let OrdersService = class OrdersService {
                         },
                     });
                 }
-                await tx.transactions.create({
-                    data: {
-                        tenant_id: tenantId,
-                        order_id: order.id,
-                        cash_session_id: sessionId,
-                        amount: v_total_amount,
-                        method: p_method || 'DINHEIRO',
-                        items_summary: 'Venda Balcão (PDV)',
-                        status: 'COMPLETED',
-                        cashier_name: p_cashier_name || 'Sistema',
-                        type: 'INCOME',
-                        category: 'SALE'
-                    },
-                });
+                const itemsSummary = 'Venda Balcão (PDV)';
+                const method = p_method || 'DINHEIRO';
+                const cashier = p_cashier_name || 'Sistema';
+                await tx.$executeRawUnsafe(`
+          INSERT INTO public.transactions 
+          (id, tenant_id, order_id, cash_session_id, amount, method, items_summary, status, cashier_name, type, category, created_at)
+          VALUES 
+          (gen_random_uuid(), '${tenantId}', '${order.id}', '${sessionId}', ${v_total_amount}, '${method}', '${itemsSummary}', 'COMPLETED', '${cashier}', 'INCOME', 'SALE', NOW())
+        `);
                 return { success: true, order_id: order.id, total: v_total_amount };
             });
         }

@@ -21,7 +21,7 @@ export class OrdersService {
 
     try {
       return await this.prisma.$transaction(async (tx) => {
-        // 🔄 Recuperação de Sessão (Obrigatório para o Financeiro)
+        // 🔄 Resgate automático de sessão de caixa
         if (!sessionId) {
           const activeSession = await tx.cash_sessions.findFirst({
             where: { tenant_id: tenantId, status: 'OPEN' },
@@ -45,7 +45,7 @@ export class OrdersService {
           let v_final_product_id = null;
           let v_final_inventory_id = null;
 
-          // 1. TENTA BUSCAR EM PRODUTOS
+          // 1. Busca em Produtos
           const product = await tx.products.findFirst({
             where: { tenant_id: tenantId, OR: [{ id: pid }, { linked_inventory_item_id: pid }] },
           });
@@ -58,20 +58,19 @@ export class OrdersService {
             v_final_product_id = product.id;
             v_final_inventory_id = product.linked_inventory_item_id;
           } else {
-            // 2. TENTA BUSCAR DIRETAMENTE NO INVENTÁRIO (Caso o ID seja um insumo sem produto pai)
+            // 2. Busca direta no Inventário (Igual ao seu SQL)
             const invItem = await tx.inventory_items.findFirst({
               where: { id: pid, tenant_id: tenantId },
             });
 
             if (invItem) {
               v_product_name = invItem.name;
-              v_product_type = 'RESALE'; // Assume revenda se for direto do estoque
+              v_product_type = 'RESALE';
               v_product_price = Number((invItem as any).sale_price || 0);
               v_cost_price = Number(invItem.cost_price || 0);
               v_final_inventory_id = invItem.id;
             } else {
-              // Se não achou em nenhum lugar, gera o erro 404
-              throw new NotFoundException(`Item ${pid} não localizado em Produtos ou Estoque.`);
+              throw new NotFoundException(`Item ${pid} não localizado.`);
             }
           }
 
@@ -104,7 +103,7 @@ export class OrdersService {
           },
         });
 
-        // 4. Criar Order Items e Baixar Stock
+        // 4. Criar Itens e Baixar Estoque
         for (const pItem of processedItems) {
           if (pItem.inventoryId) {
             await tx.inventory_items.update({
@@ -118,7 +117,7 @@ export class OrdersService {
               tenant_id: tenantId,
               order_id: order.id,
               product_id: pItem.productId,
-              inventory_item_id: pItem.inventoryId || null,
+              inventory_item_id: pItem.inventoryId,
               quantity: pItem.qty,
               notes: pItem.notes,
               status: 'DELIVERED',
@@ -132,21 +131,17 @@ export class OrdersService {
           });
         }
 
-        // 5. Registrar Transação Financeira
-        await tx.transactions.create({
-          data: {
-            tenant_id: tenantId,
-            order_id: order.id,
-            cash_session_id: sessionId,
-            amount: v_total_amount,
-            method: p_method || 'DINHEIRO',
-            items_summary: 'Venda Balcão (PDV)',
-            status: 'COMPLETED',
-            cashier_name: p_cashier_name || 'Sistema',
-            type: 'INCOME',
-            category: 'SALE'
-          } as any,
-        });
+        // 5. REGISTRAR TRANSAÇÃO (VIA SQL RAW PARA TYPE/CATEGORY)
+        const itemsSummary = 'Venda Balcão (PDV)';
+        const method = p_method || 'DINHEIRO';
+        const cashier = p_cashier_name || 'Sistema';
+
+        await tx.$executeRawUnsafe(`
+          INSERT INTO public.transactions 
+          (id, tenant_id, order_id, cash_session_id, amount, method, items_summary, status, cashier_name, type, category, created_at)
+          VALUES 
+          (gen_random_uuid(), '${tenantId}', '${order.id}', '${sessionId}', ${v_total_amount}, '${method}', '${itemsSummary}', 'COMPLETED', '${cashier}', 'INCOME', 'SALE', NOW())
+        `);
 
         return { success: true, order_id: order.id, total: v_total_amount };
       });
@@ -157,7 +152,7 @@ export class OrdersService {
   }
 
   // ==========================================
-  // OUTRAS FUNÇÕES (Sincronizadas)
+  // DEMAIS FUNÇÕES
   // ==========================================
   async placeOrder(tenantId: string, data: any) {
     const { tableId, type, items, deliveryInfo } = data;
