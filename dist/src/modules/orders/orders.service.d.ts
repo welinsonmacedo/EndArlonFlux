@@ -26,23 +26,7 @@ export declare class OrdersService {
     }>;
     processPosSale(tenantId: string, data: any): Promise<{
         success: boolean;
-        order: {
-            id: string;
-            is_paid: boolean | null;
-            status: string | null;
-            total_amount: import("@prisma/client-runtime-utils").Decimal | null;
-            created_at: Date | null;
-            customer_name: string | null;
-            order_type: string | null;
-            delivery_info: import("@prisma/client/runtime/client").JsonValue | null;
-            updated_at: Date | null;
-            waiter_id: string | null;
-            deleted_at: Date | null;
-            tenant_id: string;
-            table_id: string | null;
-            client_id: string | null;
-            domain_table_id: string | null;
-        };
+        orderId: string;
     }>;
     processPayment(tenantId: string, data: any): Promise<{
         success: boolean;
