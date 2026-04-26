@@ -16,30 +16,19 @@ let OrdersService = class OrdersService {
     constructor(prisma) {
         this.prisma = prisma;
     }
-    validateItems(items) {
-        if (!items || items.length === 0) {
-            throw new common_1.BadRequestException('O pedido precisa ter itens.');
-        }
-    }
-    validatePaymentInput(tableId, orderId) {
-        if (!tableId && !orderId) {
-            throw new common_1.BadRequestException('Informe tableId ou orderId');
-        }
-        if (tableId && orderId) {
-            throw new common_1.BadRequestException('Não envie tableId e orderId juntos');
-        }
-    }
     async processPosSale(tenantId, data) {
         const { customerName, method, items, cashierName } = data;
-        this.validateItems(items);
+        if (!items || items.length === 0) {
+            throw new common_1.BadRequestException('A venda não possui itens.');
+        }
         try {
             return await this.prisma.$transaction(async (tx) => {
                 let totalAmount = 0;
                 const processedItems = [];
                 for (const item of items) {
-                    const productId = item.id || item.productId;
+                    const productId = item.id || item.productId || item.product_id;
                     if (!productId) {
-                        throw new common_1.BadRequestException('ID do produto não fornecido em um dos itens.');
+                        throw new common_1.BadRequestException('ID do produto não fornecido (campo "id" ausente).');
                     }
                     const product = await tx.products.findUnique({
                         where: { id: productId, tenant_id: tenantId },
@@ -56,7 +45,7 @@ let OrdersService = class OrdersService {
                         price: unitPrice,
                         quantity: qty,
                         type: product.type || 'KITCHEN',
-                        inventoryItemId: item.inventory_item_id || product.linked_inventory_item_id,
+                        inventoryItemId: item.inventoryItemId || item.inventory_item_id || product.linked_inventory_item_id,
                     });
                 }
                 const order = await tx.orders.create({
@@ -110,7 +99,8 @@ let OrdersService = class OrdersService {
     }
     async placeOrder(tenantId, data) {
         const { tableId, type, items, deliveryInfo } = data;
-        this.validateItems(items);
+        if (!items || items.length === 0)
+            throw new common_1.BadRequestException('Pedido sem itens.');
         try {
             return await this.prisma.$transaction(async (tx) => {
                 const order = await tx.orders.create({
@@ -124,14 +114,14 @@ let OrdersService = class OrdersService {
                     },
                 });
                 for (const item of items) {
-                    const productId = item.id || item.productId;
+                    const productId = item.id || item.productId || item.product_id;
                     const product = await tx.products.findUnique({
                         where: { id: productId, tenant_id: tenantId }
                     });
-                    const inventoryId = item.inventory_item_id || product?.linked_inventory_item_id;
-                    if (inventoryId) {
+                    const invId = item.inventoryItemId || item.inventory_item_id || product?.linked_inventory_item_id;
+                    if (invId) {
                         await tx.inventory_items.update({
-                            where: { id: inventoryId },
+                            where: { id: invId },
                             data: { quantity: { decrement: item.quantity } },
                         });
                     }
@@ -140,7 +130,7 @@ let OrdersService = class OrdersService {
                             tenant_id: tenantId,
                             order_id: order.id,
                             product_id: productId,
-                            inventory_item_id: inventoryId || null,
+                            inventory_item_id: invId || null,
                             quantity: item.quantity,
                             product_name: product?.name || 'Produto',
                             product_price: Number(product?.price || 0),
@@ -153,13 +143,11 @@ let OrdersService = class OrdersService {
             });
         }
         catch (error) {
-            console.error('Erro no placeOrder:', error);
             throw new common_1.BadRequestException(error.message);
         }
     }
     async processPayment(tenantId, data) {
         const { tableId, orderId, amount, cashierName, method } = data;
-        this.validatePaymentInput(tableId, orderId);
         try {
             return await this.prisma.$transaction(async (tx) => {
                 if (tableId) {
@@ -173,12 +161,10 @@ let OrdersService = class OrdersService {
                     });
                 }
                 if (orderId) {
-                    const result = await tx.orders.updateMany({
+                    await tx.orders.updateMany({
                         where: { id: orderId, tenant_id: tenantId },
                         data: { is_paid: true, status: 'COMPLETED' },
                     });
-                    if (result.count === 0)
-                        throw new common_1.NotFoundException('Pedido não encontrado');
                 }
                 await tx.transactions.create({
                     data: {
@@ -195,7 +181,6 @@ let OrdersService = class OrdersService {
             });
         }
         catch (error) {
-            console.error('Erro no processPayment:', error);
             throw new common_1.BadRequestException('Erro no pagamento');
         }
     }
@@ -213,17 +198,14 @@ let OrdersService = class OrdersService {
                         });
                     }
                 }
-                const result = await tx.orders.updateMany({
+                await tx.orders.updateMany({
                     where: { id: orderId, tenant_id: tenantId },
                     data: { deleted_at: new Date(), status: 'CANCELLED' },
                 });
-                if (result.count === 0)
-                    throw new common_1.NotFoundException('Pedido não encontrado');
                 return { success: true };
             });
         }
         catch (error) {
-            console.error('Erro no cancelOrder:', error);
             throw new common_1.BadRequestException('Erro ao cancelar pedido');
         }
     }

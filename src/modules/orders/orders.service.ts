@@ -10,44 +10,29 @@ export class OrdersService {
   constructor(private readonly prisma: PrismaService) {}
 
   // ==========================================
-  // VALIDADORES PRIVADOS
-  // ==========================================
-  private validateItems(items: any[]) {
-    if (!items || items.length === 0) {
-      throw new BadRequestException('O pedido precisa ter itens.');
-    }
-  }
-
-  private validatePaymentInput(tableId?: string, orderId?: string) {
-    if (!tableId && !orderId) {
-      throw new BadRequestException('Informe tableId ou orderId');
-    }
-    if (tableId && orderId) {
-      throw new BadRequestException('Não envie tableId e orderId juntos');
-    }
-  }
-
-  // ==========================================
   // PDV SALE (Venda Direta de Balcão)
   // ==========================================
   async processPosSale(tenantId: string, data: any) {
     const { customerName, method, items, cashierName } = data;
-    this.validateItems(items);
+    
+    if (!items || items.length === 0) {
+      throw new BadRequestException('A venda não possui itens.');
+    }
 
     try {
       return await this.prisma.$transaction(async (tx) => {
         let totalAmount = 0;
         const processedItems = [];
 
-        // 1. Buscar preços e tipos reais no banco (Segurança e Correção de Valores)
         for (const item of items) {
-          // Ajuste Crítico: O seu Front envia 'id', o Back usava 'productId'
-          const productId = item.id || item.productId;
+          // 🛡️ EXPLICAÇÃO: O Front envia "id", mas aceitamos "productId" ou "product_id" por segurança.
+          const productId = item.id || item.productId || item.product_id;
           
           if (!productId) {
-            throw new BadRequestException('ID do produto não fornecido em um dos itens.');
+            throw new BadRequestException('ID do produto não fornecido (campo "id" ausente).');
           }
 
+          // Busca o produto real para garantir o PREÇO oficial e o TIPO (product_type)
           const product = await tx.products.findUnique({
             where: { id: productId, tenant_id: tenantId },
           });
@@ -65,12 +50,13 @@ export class OrdersService {
             name: product.name,
             price: unitPrice,
             quantity: qty,
-            type: product.type || 'KITCHEN', // Preenche o product_type obrigatório
-            inventoryItemId: item.inventory_item_id || product.linked_inventory_item_id,
+            type: product.type || 'KITCHEN',
+            // Captura o inventoryItemId do Front ou usa o vinculado ao produto
+            inventoryItemId: item.inventoryItemId || item.inventory_item_id || product.linked_inventory_item_id,
           });
         }
 
-        // 2. Criar o pedido (Tabela orders)
+        // 1. Criar o pedido principal (Orders)
         const order = await tx.orders.create({
           data: {
             tenant_id: tenantId,
@@ -82,9 +68,8 @@ export class OrdersService {
           },
         });
 
-        // 3. Criar itens e atualizar estoque
+        // 2. Criar itens e atualizar stock (Order Items)
         for (const item of processedItems) {
-          // Baixar estoque se houver vínculo com inventário
           if (item.inventoryItemId) {
             await tx.inventory_items.update({
               where: { id: item.inventoryItemId },
@@ -95,19 +80,19 @@ export class OrdersService {
           await tx.order_items.create({
             data: {
               tenant_id: tenantId,
-              order_id: order.id, // ID direto evita erro 'never' do TS
+              order_id: order.id, 
               product_id: item.productId,
               inventory_item_id: item.inventoryItemId || null,
               quantity: item.quantity,
               product_name: item.name,
               product_price: item.price,
-              product_type: item.type, // Resolve erro 'product_type is missing'
+              product_type: item.type,
               status: 'COMPLETED',
             } as any,
           });
         }
 
-        // 4. Registro Financeiro (Tabela transactions)
+        // 3. Registro Financeiro (Transactions)
         await tx.transactions.create({
           data: {
             tenant_id: tenantId,
@@ -132,7 +117,7 @@ export class OrdersService {
   // ==========================================
   async placeOrder(tenantId: string, data: any) {
     const { tableId, type, items, deliveryInfo } = data;
-    this.validateItems(items);
+    if (!items || items.length === 0) throw new BadRequestException('Pedido sem itens.');
 
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -148,16 +133,16 @@ export class OrdersService {
         });
 
         for (const item of items) {
-          const productId = item.id || item.productId;
+          const productId = item.id || item.productId || item.product_id;
           const product = await tx.products.findUnique({
             where: { id: productId, tenant_id: tenantId }
           });
 
-          const inventoryId = item.inventory_item_id || product?.linked_inventory_item_id;
+          const invId = item.inventoryItemId || item.inventory_item_id || product?.linked_inventory_item_id;
 
-          if (inventoryId) {
+          if (invId) {
             await tx.inventory_items.update({
-              where: { id: inventoryId },
+              where: { id: invId },
               data: { quantity: { decrement: item.quantity } },
             });
           }
@@ -167,7 +152,7 @@ export class OrdersService {
               tenant_id: tenantId,
               order_id: order.id,
               product_id: productId,
-              inventory_item_id: inventoryId || null,
+              inventory_item_id: invId || null,
               quantity: item.quantity,
               product_name: product?.name || 'Produto',
               product_price: Number(product?.price || 0),
@@ -179,17 +164,15 @@ export class OrdersService {
         return order;
       });
     } catch (error: any) {
-      console.error('Erro no placeOrder:', error);
       throw new BadRequestException(error.message);
     }
   }
 
   // ==========================================
-  // PAYMENT (Fechar conta de Mesa/Comanda)
+  // PAGAMENTO (Financeiro)
   // ==========================================
   async processPayment(tenantId: string, data: any) {
     const { tableId, orderId, amount, cashierName, method } = data;
-    this.validatePaymentInput(tableId, orderId);
 
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -206,11 +189,10 @@ export class OrdersService {
         }
 
         if (orderId) {
-          const result = await tx.orders.updateMany({
+          await tx.orders.updateMany({
             where: { id: orderId, tenant_id: tenantId },
             data: { is_paid: true, status: 'COMPLETED' },
           });
-          if (result.count === 0) throw new NotFoundException('Pedido não encontrado');
         }
 
         await tx.transactions.create({
@@ -228,13 +210,12 @@ export class OrdersService {
         return { success: true };
       });
     } catch (error: any) {
-      console.error('Erro no processPayment:', error);
       throw new BadRequestException('Erro no pagamento');
     }
   }
 
   // ==========================================
-  // CANCEL ORDER
+  // CANCELAMENTO
   // ==========================================
   async cancelOrder(tenantId: string, orderId: string) {
     try {
@@ -252,16 +233,14 @@ export class OrdersService {
           }
         }
 
-        const result = await tx.orders.updateMany({
+        await tx.orders.updateMany({
           where: { id: orderId, tenant_id: tenantId },
           data: { deleted_at: new Date(), status: 'CANCELLED' },
         });
 
-        if (result.count === 0) throw new NotFoundException('Pedido não encontrado');
         return { success: true };
       });
     } catch (error: any) {
-      console.error('Erro no cancelOrder:', error);
       throw new BadRequestException('Erro ao cancelar pedido');
     }
   }

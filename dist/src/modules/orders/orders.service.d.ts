@@ -2,8 +2,6 @@ import { PrismaService } from '../../core/prisma/prisma.service';
 export declare class OrdersService {
     private readonly prisma;
     constructor(prisma: PrismaService);
-    private validateItems;
-    private validatePaymentInput;
     processPosSale(tenantId: string, data: any): Promise<{
         success: boolean;
         orderId: string;
