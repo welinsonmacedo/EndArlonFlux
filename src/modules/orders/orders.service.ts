@@ -95,7 +95,7 @@ export class OrdersService {
         });
 
         // 2. Insere os itens e baixa o estoque
-        for (const item of items) {
+       for (const item of items) {
           await tx.order_items.create({
             data: {
               tenant_id: tenantId,
@@ -106,6 +106,10 @@ export class OrdersService {
               notes: item.notes || null,
               status: 'COMPLETED',
               product_type: item.type || 'KITCHEN',
+              
+              // 👈 ADICIONE ESTAS DUAS LINHAS:
+              product_name: item.name || 'Produto Balcão',
+              product_price: item.salePrice || 0,
             },
           });
 
