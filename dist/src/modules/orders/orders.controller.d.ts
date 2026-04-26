@@ -26,6 +26,7 @@ export declare class OrdersController {
     processPosSale(tenantId: string, body: any): Promise<{
         success: boolean;
         orderId: string;
+        total: number;
     }>;
     processPayment(tenantId: string, body: any): Promise<{
         success: boolean;

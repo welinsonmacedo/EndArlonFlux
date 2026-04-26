@@ -27,6 +27,7 @@ export declare class OrdersService {
     processPosSale(tenantId: string, data: any): Promise<{
         success: boolean;
         orderId: string;
+        total: number;
     }>;
     processPayment(tenantId: string, data: any): Promise<{
         success: boolean;

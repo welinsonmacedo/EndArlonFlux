@@ -95,16 +95,41 @@ export class OrdersService {
   // =========================
   // PDV SALE (Venda Direta)
   // =========================
-  async processPosSale(tenantId: string, data: any) {
+async processPosSale(tenantId: string, data: any) {
     const { customerName, method, items, cashierName } = data;
     this.validateItems(items);
 
-    const totalAmount = items.reduce((acc, item) => {
-      return acc + (Number(item.salePrice) || 0) * (Number(item.quantity) || 1);
-    }, 0);
-
     try {
       return await this.prisma.$transaction(async (tx) => {
+        let totalAmount = 0;
+        const itemsWithPrices = [];
+
+        // 1. BUSCAR PREÇOS REAIS NO BANCO
+        for (const item of items) {
+          const product = await tx.products.findUnique({
+            where: { id: item.productId, tenant_id: tenantId },
+          });
+
+          if (!product) {
+            throw new NotFoundException(`Produto com ID ${item.productId} não encontrado.`);
+          }
+
+          const unitPrice = Number(product.price || 0);
+          const quantity = Number(item.quantity || 1);
+          const subtotal = unitPrice * quantity;
+
+          totalAmount += subtotal;
+
+          // Guardamos os dados completos para usar na criação dos order_items
+          itemsWithPrices.push({
+            ...item,
+            unitPrice,
+            name: product.name,
+            type: product.type || 'KITCHEN'
+          });
+        }
+
+        // 2. CRIAR O PEDIDO COM O TOTAL CALCULADO NO BACK
         const order = await tx.orders.create({
           data: {
             tenant_id: tenantId,
@@ -116,7 +141,9 @@ export class OrdersService {
           },
         });
 
-        for (const item of items) {
+        // 3. GRAVAR OS ITENS E BAIXAR ESTOQUE
+        for (const item of itemsWithPrices) {
+          // Baixar estoque se houver inventoryItemId
           if (item.inventoryItemId) {
             await tx.inventory_items.update({
               where: { id: item.inventoryItemId },
@@ -124,23 +151,23 @@ export class OrdersService {
             });
           }
 
-          // FIX: Usando IDs diretos para evitar erro TS2322 (XOR)
           await tx.order_items.create({
             data: {
               tenant_id: tenantId,
-              order_id: order.id, // ID DIRETO
-              product_id: item.productId || null,
+              order_id: order.id,
+              product_id: item.productId,
               inventory_item_id: item.inventoryItemId || null,
               quantity: Number(item.quantity) || 1,
               notes: item.notes || null,
               status: 'COMPLETED',
-              product_name: item.name || 'Produto',
-              product_price: Number(item.salePrice) || 0,
-              product_type: item.type || 'PVD',
+              product_name: item.name,
+              product_price: item.unitPrice,
+              product_type: item.type,
             } as any,
           });
         }
 
+        // 4. REGISTAR A TRANSAÇÃO FINANCEIRA
         await tx.transactions.create({
           data: {
             tenant_id: tenantId,
@@ -152,7 +179,7 @@ export class OrdersService {
           },
         });
 
-        return { success: true, orderId: order.id };
+        return { success: true, orderId: order.id, total: totalAmount };
       });
     } catch (error: any) {
       console.error('Erro no processPosSale:', error);
