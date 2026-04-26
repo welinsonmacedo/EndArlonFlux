@@ -35,7 +35,7 @@ let OrdersService = class OrdersService {
                 }
                 if (!sessionId)
                     throw new common_1.BadRequestException('Venda bloqueada: Não existe caixa aberto.');
-                let v_total_amount = 0;
+                let totalAmount = 0;
                 const processedItems = [];
                 for (const item of items) {
                     const pid = item.productId || item.id || item.inventoryItemId;
@@ -70,7 +70,7 @@ let OrdersService = class OrdersService {
                     }
                     const qty = Number(item.quantity || 1);
                     const subtotal = pInfo.price * qty;
-                    v_total_amount += subtotal;
+                    totalAmount += subtotal;
                     processedItems.push({ ...pInfo, qty, subtotal });
                 }
                 const order = await tx.orders.create({
@@ -80,7 +80,7 @@ let OrdersService = class OrdersService {
                         is_paid: true,
                         customer_name: customerName,
                         order_type: 'PDV',
-                        total_amount: v_total_amount,
+                        total_amount: totalAmount,
                     },
                 });
                 for (const it of processedItems) {
@@ -112,14 +112,14 @@ let OrdersService = class OrdersService {
                         tenant_id: tenantId,
                         order_id: order.id,
                         cash_session_id: sessionId,
-                        amount: v_total_amount,
+                        amount: totalAmount,
                         method: paymentMethod,
                         items_summary: 'Venda Balcão (PDV)',
                         status: 'COMPLETED',
                         cashier_name: cashierName,
                     },
                 });
-                return { success: true, order_id: order.id, total: v_total_amount };
+                return { success: true, order_id: order.id, total: totalAmount };
             });
         }
         catch (error) {

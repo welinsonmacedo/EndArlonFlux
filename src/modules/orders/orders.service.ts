@@ -35,10 +35,10 @@ export class OrdersService {
 
         if (!sessionId) throw new BadRequestException('Venda bloqueada: Não existe caixa aberto.');
 
-        let v_total_amount = 0;
+        let totalAmount = 0;
         const processedItems = [];
 
-        // 2. Processar Itens (Lógica SQL Hierárquica)
+        // 2. Processar Itens
         for (const item of items) {
           const pid = item.productId || item.id || item.inventoryItemId;
           if (!pid) continue;
@@ -72,7 +72,7 @@ export class OrdersService {
 
           const qty = Number(item.quantity || 1);
           const subtotal = pInfo.price * qty;
-          v_total_amount += subtotal;
+          totalAmount += subtotal;
           processedItems.push({ ...pInfo, qty, subtotal });
         }
 
@@ -84,7 +84,7 @@ export class OrdersService {
             is_paid: true,
             customer_name: customerName,
             order_type: 'PDV',
-            total_amount: v_total_amount,
+            total_amount: totalAmount,
           },
         });
 
@@ -97,6 +97,7 @@ export class OrdersService {
             });
           }
 
+          // Removido o 'as any' para forçar tipagem correta
           await tx.order_items.create({
             data: {
               tenant_id: tenantId,
@@ -111,27 +112,26 @@ export class OrdersService {
               unit_price: it.price,
               total_price: it.subtotal,
               status: 'DELIVERED',
-            } as any,
+            },
           });
         }
 
-        // 5. Criar Transação (USANDO AS CHAVES EXATAS DO SCHEMA.PRISMA)
-        // ⚠️ Aqui está a correção: Usei 'as any' para forçar o Prisma a aceitar o snake_case
-        // e garantir que ele não omita os campos obrigatórios na query SQL.
+        // 5. Criar Transação 
+        // ⚠️ Removido o 'as any' aqui. Agora o Prisma valida e envia perfeitamente os dados.
         await tx.transactions.create({
           data: {
             tenant_id: tenantId,
             order_id: order.id,
             cash_session_id: sessionId,
-            amount: v_total_amount,
+            amount: totalAmount,
             method: paymentMethod,
             items_summary: 'Venda Balcão (PDV)',
             status: 'COMPLETED',
             cashier_name: cashierName,
-          } as any, 
+          },
         });
 
-        return { success: true, order_id: order.id, total: v_total_amount };
+        return { success: true, order_id: order.id, total: totalAmount };
       });
     } catch (error: any) {
       console.error('🚨 ERRO NO PROCESSAMENTO PDV:', error);
@@ -153,7 +153,7 @@ export class OrdersService {
         if (product) {
           const invId = product.linked_inventory_item_id;
           if (invId) await tx.inventory_items.update({ where: { id: invId }, data: { quantity: { decrement: item.quantity } } });
-          await tx.order_items.create({ data: { tenant_id: tenantId, order_id: order.id, product_id: product.id, quantity: item.quantity, product_name: product.name, product_price: Number(product.price || 0), product_type: product.type || 'KITCHEN', status: 'PENDING' } as any });
+          await tx.order_items.create({ data: { tenant_id: tenantId, order_id: order.id, product_id: product.id, quantity: item.quantity, product_name: product.name, product_price: Number(product.price || 0), product_type: product.type || 'KITCHEN', status: 'PENDING' } });
         }
       }
       return order;
