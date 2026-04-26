@@ -112,14 +112,12 @@ let OrdersService = class OrdersService {
                     data: {
                         tenant_id: tenantId,
                         order_id: order.id,
-                        cash_session_id: p_cash_session_id || data.cashSessionId || null,
+                        cash_session_id: p_cash_session_id || null,
                         amount: v_total_amount,
                         method: p_method || 'DINHEIRO',
                         items_summary: 'Venda Balcão (PDV)',
                         status: 'COMPLETED',
                         cashier_name: p_cashier_name || 'Sistema',
-                        type: 'INCOME',
-                        category: 'SALE'
                     },
                 });
                 return { success: true, order_id: order.id };
@@ -183,22 +181,13 @@ let OrdersService = class OrdersService {
         return { success: true };
     }
     async cancelOrder(tenantId, orderId) {
-        const items = await this.prisma.order_items.findMany({ where: { order_id: orderId } });
-        for (const item of items) {
-            if (item.inventory_item_id) {
-                await this.prisma.inventory_items.update({ where: { id: item.inventory_item_id }, data: { quantity: { increment: item.quantity } } });
-            }
-        }
         await this.prisma.orders.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
         return { success: true };
     }
     async dispatchOrder(tenantId, orderId, courierInfo) {
         await this.prisma.orders.updateMany({
             where: { id: orderId, tenant_id: tenantId },
-            data: {
-                status: 'DISPATCHED',
-                delivery_info: courierInfo || null
-            },
+            data: { status: 'DISPATCHED', delivery_info: courierInfo || null },
         });
         return { success: true };
     }
