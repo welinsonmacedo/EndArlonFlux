@@ -25,20 +25,21 @@ export class OrdersService {
         const processedItems = [];
 
         for (const item of items) {
-          // 🛡️ EXPLICAÇÃO: O Front envia "id", mas aceitamos "productId" ou "product_id" por segurança.
-          const productId = item.id || item.productId || item.product_id;
+          // 🛡️ SINCRONIZAÇÃO TOTAL: 
+          // O seu Front envia 'productId'. O código abaixo aceita 'productId', 'id' ou 'product_id'
+          const pid = item.productId || item.id || item.product_id;
           
-          if (!productId) {
-            throw new BadRequestException('ID do produto não fornecido (campo "id" ausente).');
+          if (!pid) {
+            throw new BadRequestException('ID do produto ausente no payload enviado pelo Front-end.');
           }
 
-          // Busca o produto real para garantir o PREÇO oficial e o TIPO (product_type)
+          // Busca o produto oficial no banco para garantir PREÇO e TIPO (product_type)
           const product = await tx.products.findUnique({
-            where: { id: productId, tenant_id: tenantId },
+            where: { id: pid, tenant_id: tenantId },
           });
 
           if (!product) {
-            throw new NotFoundException(`Produto ${productId} não encontrado.`);
+            throw new NotFoundException(`Produto ${pid} não existe no banco de dados.`);
           }
 
           const unitPrice = Number(product.price || 0);
@@ -51,12 +52,12 @@ export class OrdersService {
             price: unitPrice,
             quantity: qty,
             type: product.type || 'KITCHEN',
-            // Captura o inventoryItemId do Front ou usa o vinculado ao produto
+            // Pega o inventory_item_id vindo do front ou o que está vinculado no produto
             inventoryItemId: item.inventoryItemId || item.inventory_item_id || product.linked_inventory_item_id,
           });
         }
 
-        // 1. Criar o pedido principal (Orders)
+        // 1. Criar o pedido (Tabela public.orders)
         const order = await tx.orders.create({
           data: {
             tenant_id: tenantId,
@@ -68,7 +69,7 @@ export class OrdersService {
           },
         });
 
-        // 2. Criar itens e atualizar stock (Order Items)
+        // 2. Criar itens e baixar estoque
         for (const item of processedItems) {
           if (item.inventoryItemId) {
             await tx.inventory_items.update({
@@ -88,11 +89,11 @@ export class OrdersService {
               product_price: item.price,
               product_type: item.type,
               status: 'COMPLETED',
-            } as any,
+            } as any, // Cast para evitar conflitos de tipagem XOR do Prisma
           });
         }
 
-        // 3. Registro Financeiro (Transactions)
+        // 3. Registro Financeiro (Tabela public.transactions)
         await tx.transactions.create({
           data: {
             tenant_id: tenantId,
@@ -133,9 +134,9 @@ export class OrdersService {
         });
 
         for (const item of items) {
-          const productId = item.id || item.productId || item.product_id;
+          const pid = item.productId || item.id || item.product_id;
           const product = await tx.products.findUnique({
-            where: { id: productId, tenant_id: tenantId }
+            where: { id: pid, tenant_id: tenantId }
           });
 
           const invId = item.inventoryItemId || item.inventory_item_id || product?.linked_inventory_item_id;
@@ -151,7 +152,7 @@ export class OrdersService {
             data: {
               tenant_id: tenantId,
               order_id: order.id,
-              product_id: productId,
+              product_id: pid,
               inventory_item_id: invId || null,
               quantity: item.quantity,
               product_name: product?.name || 'Produto',
@@ -215,7 +216,7 @@ export class OrdersService {
   }
 
   // ==========================================
-  // CANCELAMENTO
+  // CANCELAMENTO (Com devolução de estoque)
   // ==========================================
   async cancelOrder(tenantId: string, orderId: string) {
     try {

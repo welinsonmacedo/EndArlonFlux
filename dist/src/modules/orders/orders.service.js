@@ -26,15 +26,15 @@ let OrdersService = class OrdersService {
                 let totalAmount = 0;
                 const processedItems = [];
                 for (const item of items) {
-                    const productId = item.id || item.productId || item.product_id;
-                    if (!productId) {
-                        throw new common_1.BadRequestException('ID do produto não fornecido (campo "id" ausente).');
+                    const pid = item.productId || item.id || item.product_id;
+                    if (!pid) {
+                        throw new common_1.BadRequestException('ID do produto ausente no payload enviado pelo Front-end.');
                     }
                     const product = await tx.products.findUnique({
-                        where: { id: productId, tenant_id: tenantId },
+                        where: { id: pid, tenant_id: tenantId },
                     });
                     if (!product) {
-                        throw new common_1.NotFoundException(`Produto ${productId} não encontrado.`);
+                        throw new common_1.NotFoundException(`Produto ${pid} não existe no banco de dados.`);
                     }
                     const unitPrice = Number(product.price || 0);
                     const qty = Number(item.quantity || 1);
@@ -114,9 +114,9 @@ let OrdersService = class OrdersService {
                     },
                 });
                 for (const item of items) {
-                    const productId = item.id || item.productId || item.product_id;
+                    const pid = item.productId || item.id || item.product_id;
                     const product = await tx.products.findUnique({
-                        where: { id: productId, tenant_id: tenantId }
+                        where: { id: pid, tenant_id: tenantId }
                     });
                     const invId = item.inventoryItemId || item.inventory_item_id || product?.linked_inventory_item_id;
                     if (invId) {
@@ -129,7 +129,7 @@ let OrdersService = class OrdersService {
                         data: {
                             tenant_id: tenantId,
                             order_id: order.id,
-                            product_id: productId,
+                            product_id: pid,
                             inventory_item_id: invId || null,
                             quantity: item.quantity,
                             product_name: product?.name || 'Produto',
