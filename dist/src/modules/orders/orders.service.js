@@ -17,72 +17,98 @@ let OrdersService = class OrdersService {
         this.prisma = prisma;
     }
     async processPosSale(tenantId, data) {
-        const { customerName, method, items, cashierName } = data;
-        if (!items || items.length === 0) {
+        const { p_customer_name, p_method, p_items, p_cashier_name } = data;
+        const items = p_items || data.items || [];
+        if (items.length === 0) {
             throw new common_1.BadRequestException('A venda não possui itens.');
         }
         try {
             return await this.prisma.$transaction(async (tx) => {
-                let totalAmount = 0;
+                let v_total_amount = 0;
                 const processedItems = [];
                 for (const item of items) {
-                    const pid = item.productId || item.id || item.inventoryItemId;
-                    if (!pid) {
-                        throw new common_1.BadRequestException('ID do produto não fornecido.');
+                    const v_product_id = item.productId || item.id || null;
+                    const v_inventory_item_id = item.inventoryItemId || item.inventory_item_id || null;
+                    const v_quantity = Number(item.quantity || 1);
+                    const v_notes = item.notes || '';
+                    let v_product_name = 'Produto Desconhecido';
+                    let v_product_type = 'KITCHEN';
+                    let v_product_price = 0;
+                    let v_cost_price = 0;
+                    let v_final_product_id = v_product_id;
+                    let v_final_inventory_id = v_inventory_item_id;
+                    if (v_product_id) {
+                        const product = await tx.products.findFirst({
+                            where: { id: v_product_id, tenant_id: tenantId },
+                        });
+                        if (product) {
+                            v_product_name = product.name;
+                            v_product_type = product.type;
+                            v_product_price = Number(product.price || 0);
+                            v_cost_price = Number(product.cost_price || 0);
+                            v_final_inventory_id = product.linked_inventory_item_id;
+                        }
                     }
-                    const product = await tx.products.findFirst({
-                        where: {
-                            tenant_id: tenantId,
-                            OR: [
-                                { id: pid },
-                                { linked_inventory_item_id: pid }
-                            ]
-                        },
-                    });
-                    if (!product) {
-                        console.error(`❌ Produto não encontrado. ID pesquisado: ${pid} | Tenant: ${tenantId}`);
-                        throw new common_1.NotFoundException(`Produto ${pid} não localizado no sistema para este restaurante.`);
+                    if (v_product_name === 'Produto Desconhecido' && v_final_inventory_id) {
+                        const invItem = await tx.inventory_items.findFirst({
+                            where: { id: v_final_inventory_id, tenant_id: tenantId },
+                        });
+                        if (invItem) {
+                            v_product_name = invItem.name;
+                            v_product_type = 'RESALE';
+                            v_product_price = Number(invItem.sale_price || 0);
+                            v_cost_price = Number(invItem.cost_price || 0);
+                        }
                     }
-                    const unitPrice = Number(product.price || 0);
-                    const qty = Number(item.quantity || 1);
-                    totalAmount += unitPrice * qty;
+                    if (v_product_name === 'Produto Desconhecido' && !v_product_id && !v_inventory_item_id) {
+                        throw new common_1.BadRequestException('Item sem identificação válida.');
+                    }
+                    const v_total_price = v_product_price * v_quantity;
+                    v_total_amount += v_total_price;
                     processedItems.push({
-                        productId: product.id,
-                        name: product.name,
-                        price: unitPrice,
-                        quantity: qty,
-                        type: product.type || 'SIMPLE',
-                        inventoryItemId: product.linked_inventory_item_id,
+                        v_final_product_id,
+                        v_final_inventory_id,
+                        v_quantity,
+                        v_notes,
+                        v_product_name,
+                        v_product_type,
+                        v_product_price,
+                        v_cost_price,
+                        v_total_price
                     });
                 }
                 const order = await tx.orders.create({
                     data: {
                         tenant_id: tenantId,
-                        order_type: 'PDV',
-                        status: 'COMPLETED',
+                        status: 'DELIVERED',
                         is_paid: true,
-                        customer_name: customerName || 'Consumidor Final',
-                        total_amount: totalAmount,
+                        customer_name: p_customer_name || 'Consumidor Final',
+                        order_type: 'PDV',
+                        total_amount: v_total_amount,
                     },
                 });
-                for (const pItem of processedItems) {
-                    if (pItem.inventoryItemId) {
+                for (const pi of processedItems) {
+                    if (pi.v_final_inventory_id) {
                         await tx.inventory_items.update({
-                            where: { id: pItem.inventoryItemId },
-                            data: { quantity: { decrement: pItem.quantity } },
+                            where: { id: pi.v_final_inventory_id },
+                            data: { quantity: { decrement: pi.v_quantity } },
                         });
                     }
                     await tx.order_items.create({
                         data: {
                             tenant_id: tenantId,
                             order_id: order.id,
-                            product_id: pItem.productId,
-                            inventory_item_id: pItem.inventoryItemId || null,
-                            quantity: pItem.quantity,
-                            product_name: pItem.name,
-                            product_price: pItem.price,
-                            product_type: pItem.type,
-                            status: 'COMPLETED',
+                            product_id: pi.v_final_product_id,
+                            inventory_item_id: pi.v_final_inventory_id,
+                            quantity: pi.v_quantity,
+                            notes: pi.v_notes,
+                            status: 'DELIVERED',
+                            product_name: pi.v_product_name,
+                            product_type: pi.v_product_type,
+                            product_price: pi.v_product_price,
+                            product_cost_price: pi.v_cost_price,
+                            unit_price: pi.v_product_price,
+                            total_price: pi.v_total_price,
                         },
                     });
                 }
@@ -90,24 +116,24 @@ let OrdersService = class OrdersService {
                     data: {
                         tenant_id: tenantId,
                         order_id: order.id,
-                        amount: totalAmount,
-                        method: method || 'DINHEIRO',
-                        cashier_name: cashierName || 'Sistema',
+                        amount: v_total_amount,
+                        method: p_method || 'DINHEIRO',
+                        items_summary: 'Venda Balcão (PDV)',
                         status: 'COMPLETED',
+                        cashier_name: p_cashier_name || 'Sistema',
                     },
                 });
-                return { success: true, orderId: order.id, total: totalAmount };
+                return { success: true, order_id: order.id };
             });
         }
         catch (error) {
-            console.error('🚨 Erro Crítico PDV:', error);
-            throw new common_1.BadRequestException(error.message || 'Erro ao processar venda');
+            console.error('🚨 Erro PDV:', error.message);
+            throw new common_1.BadRequestException(error.message);
         }
     }
     async placeOrder(tenantId, data) {
         const { tableId, type, items, deliveryInfo } = data;
-        if (!items || items.length === 0)
-            throw new common_1.BadRequestException('Pedido sem itens.');
+        this.validateItems(items);
         try {
             return await this.prisma.$transaction(async (tx) => {
                 const order = await tx.orders.create({
@@ -121,14 +147,14 @@ let OrdersService = class OrdersService {
                     },
                 });
                 for (const item of items) {
-                    const pid = item.productId || item.id || item.inventoryItemId;
+                    const pid = item.productId || item.id;
                     const product = await tx.products.findFirst({
                         where: {
                             tenant_id: tenantId,
                             OR: [{ id: pid }, { linked_inventory_item_id: pid }]
                         }
                     });
-                    const invId = product?.linked_inventory_item_id;
+                    const invId = product?.linked_inventory_item_id || item.inventoryItemId;
                     if (invId) {
                         await tx.inventory_items.update({
                             where: { id: invId },
@@ -157,80 +183,37 @@ let OrdersService = class OrdersService {
         }
     }
     async processPayment(tenantId, data) {
-        const { tableId, orderId, amount, cashierName, method } = data;
-        try {
-            return await this.prisma.$transaction(async (tx) => {
-                if (tableId) {
-                    await tx.orders.updateMany({
-                        where: { tenant_id: tenantId, table_id: tableId, is_paid: false },
-                        data: { is_paid: true, status: 'COMPLETED' },
-                    });
-                    await tx.restaurant_tables.update({
-                        where: { id: tableId },
-                        data: { status: 'AVAILABLE', customer_name: null, access_code: null },
-                    });
-                }
-                if (orderId) {
-                    await tx.orders.updateMany({
-                        where: { id: orderId, tenant_id: tenantId },
-                        data: { is_paid: true, status: 'COMPLETED' },
-                    });
-                }
-                await tx.transactions.create({
-                    data: {
-                        tenant_id: tenantId,
-                        order_id: orderId || null,
-                        amount: Number(amount) || 0,
-                        method: method || 'DINHEIRO',
-                        cashier_name: cashierName || 'Sistema',
-                        status: 'COMPLETED',
-                    },
-                });
-                return { success: true };
-            });
-        }
-        catch (error) {
-            throw new common_1.BadRequestException('Erro no pagamento');
-        }
+        const { p_order_id, amount, p_method, p_cashier_name } = data;
+        await this.prisma.orders.update({
+            where: { id: p_order_id },
+            data: { is_paid: true, status: 'COMPLETED' },
+        });
+        return { success: true };
     }
     async cancelOrder(tenantId, orderId) {
-        try {
-            return await this.prisma.$transaction(async (tx) => {
-                const items = await tx.order_items.findMany({
-                    where: { order_id: orderId, tenant_id: tenantId },
+        const items = await this.prisma.order_items.findMany({ where: { order_id: orderId } });
+        for (const item of items) {
+            if (item.inventory_item_id) {
+                await this.prisma.inventory_items.update({
+                    where: { id: item.inventory_item_id },
+                    data: { quantity: { increment: item.quantity } },
                 });
-                for (const item of items) {
-                    if (item.inventory_item_id) {
-                        await tx.inventory_items.update({
-                            where: { id: item.inventory_item_id },
-                            data: { quantity: { increment: item.quantity } },
-                        });
-                    }
-                }
-                await tx.orders.updateMany({
-                    where: { id: orderId, tenant_id: tenantId },
-                    data: { deleted_at: new Date(), status: 'CANCELLED' },
-                });
-                return { success: true };
-            });
+            }
         }
-        catch (error) {
-            throw new common_1.BadRequestException('Erro ao cancelar pedido');
-        }
+        await this.prisma.orders.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
+        return { success: true };
     }
     async dispatchOrder(tenantId, orderId, courierInfo) {
-        await this.prisma.orders.updateMany({
-            where: { id: orderId, tenant_id: tenantId },
-            data: { status: 'DISPATCHED', delivery_info: courierInfo || null },
-        });
+        await this.prisma.orders.update({ where: { id: orderId }, data: { status: 'DISPATCHED' } });
         return { success: true };
     }
     async updateItemStatus(tenantId, itemId, status) {
-        await this.prisma.order_items.updateMany({
-            where: { id: itemId, tenant_id: tenantId },
-            data: { status },
-        });
+        await this.prisma.order_items.update({ where: { id: itemId }, data: { status } });
         return { success: true };
+    }
+    validateItems(items) {
+        if (!items || items.length === 0)
+            throw new common_1.BadRequestException('Sem itens.');
     }
 };
 exports.OrdersService = OrdersService;

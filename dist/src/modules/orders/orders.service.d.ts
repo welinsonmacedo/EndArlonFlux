@@ -4,8 +4,7 @@ export declare class OrdersService {
     constructor(prisma: PrismaService);
     processPosSale(tenantId: string, data: any): Promise<{
         success: boolean;
-        orderId: string;
-        total: number;
+        order_id: string;
     }>;
     placeOrder(tenantId: string, data: any): Promise<{
         id: string;
@@ -36,4 +35,5 @@ export declare class OrdersService {
     updateItemStatus(tenantId: string, itemId: string, status: string): Promise<{
         success: boolean;
     }>;
+    private validateItems;
 }
