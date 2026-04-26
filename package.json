@@ -23,9 +23,14 @@
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3"
   },
-  "scripts": {
-    "start": "node dist/main",
+ "scripts": {
+    "build": "nest build",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "start": "nest start",
     "start:dev": "nest start --watch",
-    "build": "nest build"
+    "postinstall": "prisma generate",
+    
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main"
   }
 }
