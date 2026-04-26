@@ -26,15 +26,21 @@ let OrdersService = class OrdersService {
                 let totalAmount = 0;
                 const processedItems = [];
                 for (const item of items) {
-                    const pid = item.productId || item.id || item.product_id;
+                    const pid = item.id || item.inventoryItemId || item.productId;
                     if (!pid) {
-                        throw new common_1.BadRequestException('ID do produto ausente no payload enviado pelo Front-end.');
+                        throw new common_1.BadRequestException('ID do produto não encontrado no item enviado.');
                     }
-                    const product = await tx.products.findUnique({
-                        where: { id: pid, tenant_id: tenantId },
+                    const product = await tx.products.findFirst({
+                        where: {
+                            OR: [
+                                { id: pid },
+                                { linked_inventory_item_id: pid }
+                            ],
+                            tenant_id: tenantId
+                        },
                     });
                     if (!product) {
-                        throw new common_1.NotFoundException(`Produto ${pid} não existe no banco de dados.`);
+                        throw new common_1.NotFoundException(`Produto ${pid} não localizado.`);
                     }
                     const unitPrice = Number(product.price || 0);
                     const qty = Number(item.quantity || 1);
@@ -44,8 +50,8 @@ let OrdersService = class OrdersService {
                         name: product.name,
                         price: unitPrice,
                         quantity: qty,
-                        type: product.type || 'KITCHEN',
-                        inventoryItemId: item.inventoryItemId || item.inventory_item_id || product.linked_inventory_item_id,
+                        type: product.type || 'SIMPLE',
+                        inventoryItemId: product.linked_inventory_item_id,
                     });
                 }
                 const order = await tx.orders.create({
@@ -54,27 +60,27 @@ let OrdersService = class OrdersService {
                         order_type: 'PDV',
                         status: 'COMPLETED',
                         is_paid: true,
-                        customer_name: customerName || null,
+                        customer_name: customerName || 'Consumidor Final',
                         total_amount: totalAmount,
                     },
                 });
-                for (const item of processedItems) {
-                    if (item.inventoryItemId) {
+                for (const pItem of processedItems) {
+                    if (pItem.inventoryItemId) {
                         await tx.inventory_items.update({
-                            where: { id: item.inventoryItemId },
-                            data: { quantity: { decrement: item.quantity } },
+                            where: { id: pItem.inventoryItemId },
+                            data: { quantity: { decrement: pItem.quantity } },
                         });
                     }
                     await tx.order_items.create({
                         data: {
                             tenant_id: tenantId,
                             order_id: order.id,
-                            product_id: item.productId,
-                            inventory_item_id: item.inventoryItemId || null,
-                            quantity: item.quantity,
-                            product_name: item.name,
-                            product_price: item.price,
-                            product_type: item.type,
+                            product_id: pItem.productId,
+                            inventory_item_id: pItem.inventoryItemId || null,
+                            quantity: pItem.quantity,
+                            product_name: pItem.name,
+                            product_price: pItem.price,
+                            product_type: pItem.type,
                             status: 'COMPLETED',
                         },
                     });
@@ -93,7 +99,7 @@ let OrdersService = class OrdersService {
             });
         }
         catch (error) {
-            console.error('🚨 Erro Crítico PDV:', error);
+            console.error('Erro PDV:', error);
             throw new common_1.BadRequestException(error.message || 'Erro ao processar venda');
         }
     }
@@ -114,11 +120,14 @@ let OrdersService = class OrdersService {
                     },
                 });
                 for (const item of items) {
-                    const pid = item.productId || item.id || item.product_id;
-                    const product = await tx.products.findUnique({
-                        where: { id: pid, tenant_id: tenantId }
+                    const pid = item.productId || item.id;
+                    const product = await tx.products.findFirst({
+                        where: {
+                            OR: [{ id: pid }, { linked_inventory_item_id: pid }],
+                            tenant_id: tenantId
+                        }
                     });
-                    const invId = item.inventoryItemId || item.inventory_item_id || product?.linked_inventory_item_id;
+                    const invId = product?.linked_inventory_item_id;
                     if (invId) {
                         await tx.inventory_items.update({
                             where: { id: invId },
@@ -129,12 +138,12 @@ let OrdersService = class OrdersService {
                         data: {
                             tenant_id: tenantId,
                             order_id: order.id,
-                            product_id: pid,
+                            product_id: product?.id || pid,
                             inventory_item_id: invId || null,
                             quantity: item.quantity,
                             product_name: product?.name || 'Produto',
                             product_price: Number(product?.price || 0),
-                            product_type: product?.type || 'KITCHEN',
+                            product_type: product?.type || 'SIMPLE',
                             status: 'PENDING',
                         },
                     });

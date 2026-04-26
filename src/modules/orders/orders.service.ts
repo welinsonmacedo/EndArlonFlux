@@ -25,21 +25,26 @@ export class OrdersService {
         const processedItems = [];
 
         for (const item of items) {
-          // 🛡️ SINCRONIZAÇÃO TOTAL: 
-          // O seu Front envia 'productId'. O código abaixo aceita 'productId', 'id' ou 'product_id'
-          const pid = item.productId || item.id || item.product_id;
+          // Captura o ID enviado pelo Front (CommercePOS envia id ou inventoryItemId)
+          const pid = item.id || item.inventoryItemId || item.productId;
           
           if (!pid) {
-            throw new BadRequestException('ID do produto ausente no payload enviado pelo Front-end.');
+            throw new BadRequestException('ID do produto não encontrado no item enviado.');
           }
 
-          // Busca o produto oficial no banco para garantir PREÇO e TIPO (product_type)
-          const product = await tx.products.findUnique({
-            where: { id: pid, tenant_id: tenantId },
+          // Busca o produto real. Nota: No seu Prisma o campo é linked_inventory_item_id
+          const product = await tx.products.findFirst({
+            where: { 
+              OR: [
+                { id: pid },
+                { linked_inventory_item_id: pid }
+              ],
+              tenant_id: tenantId 
+            },
           });
 
           if (!product) {
-            throw new NotFoundException(`Produto ${pid} não existe no banco de dados.`);
+            throw new NotFoundException(`Produto ${pid} não localizado.`);
           }
 
           const unitPrice = Number(product.price || 0);
@@ -51,49 +56,45 @@ export class OrdersService {
             name: product.name,
             price: unitPrice,
             quantity: qty,
-            type: product.type || 'KITCHEN',
-            // Pega o inventory_item_id vindo do front ou o que está vinculado no produto
-            inventoryItemId: item.inventoryItemId || item.inventory_item_id || product.linked_inventory_item_id,
+            type: product.type || 'SIMPLE',
+            inventoryItemId: product.linked_inventory_item_id, // Nome corrigido p/ Prisma
           });
         }
 
-        // 1. Criar o pedido (Tabela public.orders)
         const order = await tx.orders.create({
           data: {
             tenant_id: tenantId,
             order_type: 'PDV',
             status: 'COMPLETED',
             is_paid: true,
-            customer_name: customerName || null,
+            customer_name: customerName || 'Consumidor Final',
             total_amount: totalAmount,
           },
         });
 
-        // 2. Criar itens e baixar estoque
-        for (const item of processedItems) {
-          if (item.inventoryItemId) {
+        for (const pItem of processedItems) {
+          if (pItem.inventoryItemId) {
             await tx.inventory_items.update({
-              where: { id: item.inventoryItemId },
-              data: { quantity: { decrement: item.quantity } },
+              where: { id: pItem.inventoryItemId },
+              data: { quantity: { decrement: pItem.quantity } }, // Nome corrigido p/ quantity
             });
           }
 
           await tx.order_items.create({
             data: {
               tenant_id: tenantId,
-              order_id: order.id, 
-              product_id: item.productId,
-              inventory_item_id: item.inventoryItemId || null,
-              quantity: item.quantity,
-              product_name: item.name,
-              product_price: item.price,
-              product_type: item.type,
+              order_id: order.id,
+              product_id: pItem.productId,
+              inventory_item_id: pItem.inventoryItemId || null,
+              quantity: pItem.quantity,
+              product_name: pItem.name,
+              product_price: pItem.price,
+              product_type: pItem.type,
               status: 'COMPLETED',
-            } as any, // Cast para evitar conflitos de tipagem XOR do Prisma
+            } as any,
           });
         }
 
-        // 3. Registro Financeiro (Tabela public.transactions)
         await tx.transactions.create({
           data: {
             tenant_id: tenantId,
@@ -108,13 +109,13 @@ export class OrdersService {
         return { success: true, orderId: order.id, total: totalAmount };
       });
     } catch (error: any) {
-      console.error('🚨 Erro Crítico PDV:', error);
+      console.error('Erro PDV:', error);
       throw new BadRequestException(error.message || 'Erro ao processar venda');
     }
   }
 
   // ==========================================
-  // PLACE ORDER (Mesa / QR Code / Delivery)
+  // PLACE ORDER (Mesa / Delivery)
   // ==========================================
   async placeOrder(tenantId: string, data: any) {
     const { tableId, type, items, deliveryInfo } = data;
@@ -134,12 +135,15 @@ export class OrdersService {
         });
 
         for (const item of items) {
-          const pid = item.productId || item.id || item.product_id;
-          const product = await tx.products.findUnique({
-            where: { id: pid, tenant_id: tenantId }
+          const pid = item.productId || item.id;
+          const product = await tx.products.findFirst({
+            where: { 
+              OR: [{ id: pid }, { linked_inventory_item_id: pid }],
+              tenant_id: tenantId 
+            }
           });
 
-          const invId = item.inventoryItemId || item.inventory_item_id || product?.linked_inventory_item_id;
+          const invId = product?.linked_inventory_item_id;
 
           if (invId) {
             await tx.inventory_items.update({
@@ -152,12 +156,12 @@ export class OrdersService {
             data: {
               tenant_id: tenantId,
               order_id: order.id,
-              product_id: pid,
+              product_id: product?.id || pid,
               inventory_item_id: invId || null,
               quantity: item.quantity,
               product_name: product?.name || 'Produto',
               product_price: Number(product?.price || 0),
-              product_type: product?.type || 'KITCHEN',
+              product_type: product?.type || 'SIMPLE',
               status: 'PENDING',
             } as any,
           });
@@ -170,7 +174,7 @@ export class OrdersService {
   }
 
   // ==========================================
-  // PAGAMENTO (Financeiro)
+  // PAYMENT (Fechar conta)
   // ==========================================
   async processPayment(tenantId: string, data: any) {
     const { tableId, orderId, amount, cashierName, method } = data;
@@ -216,7 +220,7 @@ export class OrdersService {
   }
 
   // ==========================================
-  // CANCELAMENTO (Com devolução de estoque)
+  // CANCELAMENTO (Devolve Stock)
   // ==========================================
   async cancelOrder(tenantId: string, orderId: string) {
     try {
