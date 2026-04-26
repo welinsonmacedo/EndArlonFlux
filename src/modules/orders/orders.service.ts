@@ -10,23 +10,18 @@ export class OrdersService {
   constructor(private readonly prisma: PrismaService) {}
 
   // ==========================================
-  // PDV SALE (Venda Direta de Balcão)
+  // PDV SALE (Venda Direta - Lógica SQL Total)
   // ==========================================
   async processPosSale(tenantId: string, data: any) {
-    // 1. Extração de dados compatível com Front (p_items) e SQL (p_customer_name)
     const { p_customer_name, p_method, p_cashier_name } = data;
     const items = data.p_items || data.items || [];
-    
-    // Captura flexível da sessão de caixa (Obrigatória para o seu financeiro)
     let sessionId = data.p_cash_session_id || data.cashSessionId || data.sessionId;
 
-    if (!items || items.length === 0) {
-      throw new BadRequestException('A venda não possui itens.');
-    }
+    if (!items || items.length === 0) throw new BadRequestException('A venda não possui itens.');
 
     try {
       return await this.prisma.$transaction(async (tx) => {
-        // 🔄 Busca automática de sessão se o Front não enviou (Blindagem)
+        // 🔄 Recuperação de Sessão (Obrigatório para o Financeiro)
         if (!sessionId) {
           const activeSession = await tx.cash_sessions.findFirst({
             where: { tenant_id: tenantId, status: 'OPEN' },
@@ -34,56 +29,70 @@ export class OrdersService {
           });
           sessionId = activeSession?.id;
         }
-
-        if (!sessionId) {
-          throw new BadRequestException('Venda bloqueada: Não existe sessão de caixa aberta.');
-        }
+        if (!sessionId) throw new BadRequestException('Não existe sessão de caixa aberta.');
 
         let v_total_amount = 0;
         const processedItems = [];
 
-        // 2. Loop de processamento de itens (Lógica idêntica à sua função SQL)
         for (const item of items) {
-          // O seu front envia 'productId'. Capturamos qualquer variante para não falhar.
           const pid = item.productId || item.id || item.inventoryItemId;
-          
-          if (!pid) continue; // Pula se o item vier vazio, em vez de quebrar a busca
+          if (!pid) continue;
 
-          // 🛡️ BUSCA CORRIGIDA: Resolve o erro "Argument id is missing" do Prisma
-          // Procura o produto por ID próprio OU pelo vínculo de inventário vinculado (insumo)
+          let v_product_name = 'Produto Desconhecido';
+          let v_product_type = 'KITCHEN';
+          let v_product_price = 0;
+          let v_cost_price = 0;
+          let v_final_product_id = null;
+          let v_final_inventory_id = null;
+
+          // 1. TENTA BUSCAR EM PRODUTOS
           const product = await tx.products.findFirst({
-            where: { 
-              tenant_id: tenantId,
-              OR: [
-                { id: pid },
-                { linked_inventory_item_id: pid }
-              ]
-            },
+            where: { tenant_id: tenantId, OR: [{ id: pid }, { linked_inventory_item_id: pid }] },
           });
 
-          if (!product) {
-            throw new NotFoundException(`Produto ou Insumo ${pid} não localizado.`);
+          if (product) {
+            v_product_name = product.name;
+            v_product_type = product.type;
+            v_product_price = Number(product.price || 0);
+            v_cost_price = Number(product.cost_price || 0);
+            v_final_product_id = product.id;
+            v_final_inventory_id = product.linked_inventory_item_id;
+          } else {
+            // 2. TENTA BUSCAR DIRETAMENTE NO INVENTÁRIO (Caso o ID seja um insumo sem produto pai)
+            const invItem = await tx.inventory_items.findFirst({
+              where: { id: pid, tenant_id: tenantId },
+            });
+
+            if (invItem) {
+              v_product_name = invItem.name;
+              v_product_type = 'RESALE'; // Assume revenda se for direto do estoque
+              v_product_price = Number((invItem as any).sale_price || 0);
+              v_cost_price = Number(invItem.cost_price || 0);
+              v_final_inventory_id = invItem.id;
+            } else {
+              // Se não achou em nenhum lugar, gera o erro 404
+              throw new NotFoundException(`Item ${pid} não localizado em Produtos ou Estoque.`);
+            }
           }
 
-          const unitPrice = Number(product.price || 0);
           const qty = Number(item.quantity || 1);
-          const totalPrice = unitPrice * qty;
+          const totalPrice = v_product_price * qty;
           v_total_amount += totalPrice;
 
           processedItems.push({
-            productId: product.id,
-            inventoryId: product.linked_inventory_item_id,
-            name: product.name,
-            type: product.type || 'KITCHEN',
-            price: unitPrice,
-            costPrice: Number(product.cost_price || 0),
+            productId: v_final_product_id,
+            inventoryId: v_final_inventory_id,
+            name: v_product_name,
+            type: v_product_type,
+            price: v_product_price,
+            costPrice: v_cost_price,
             qty: qty,
             totalPrice: totalPrice,
             notes: item.notes || ''
           });
         }
 
-        // 3. Criar o Pedido (Orders) - Status DELIVERED e is_paid conforme sua regra
+        // 3. Criar Pedido
         const order = await tx.orders.create({
           data: {
             tenant_id: tenantId,
@@ -119,11 +128,11 @@ export class OrdersService {
               product_cost_price: pItem.costPrice,
               unit_price: pItem.price,
               total_price: pItem.totalPrice,
-            } as any, // as any para suportar os campos unit_price/total_price do seu DB
+            } as any,
           });
         }
 
-        // 5. Registrar Transação Financeira (Blindagem contra violação de Nulo)
+        // 5. Registrar Transação Financeira
         await tx.transactions.create({
           data: {
             tenant_id: tenantId,
@@ -134,147 +143,70 @@ export class OrdersService {
             items_summary: 'Venda Balcão (PDV)',
             status: 'COMPLETED',
             cashier_name: p_cashier_name || 'Sistema',
-            type: 'INCOME',   // Campo obrigatório (Enum) no seu SQL
-            category: 'SALE'  // Campo obrigatório no seu SQL
+            type: 'INCOME',
+            category: 'SALE'
           } as any,
         });
 
         return { success: true, order_id: order.id, total: v_total_amount };
       });
     } catch (error: any) {
-      console.error('🚨 Erro Crítico no processPosSale:', error);
-      throw new BadRequestException(error.message || 'Erro ao processar venda PDV');
-    }
-  }
-
-  // ==========================================
-  // PLACE ORDER (Mesas / QR Code / Delivery)
-  // ==========================================
-  async placeOrder(tenantId: string, data: any) {
-    const { tableId, type, items, deliveryInfo } = data;
-    if (!items || items.length === 0) throw new BadRequestException('Pedido sem itens.');
-
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        const order = await tx.orders.create({
-          data: {
-            tenant_id: tenantId,
-            table_id: tableId || null,
-            order_type: type || 'DINE_IN',
-            status: 'PENDING',
-            is_paid: false,
-            delivery_info: deliveryInfo || null,
-          },
-        });
-
-        for (const item of items) {
-          const pid = item.productId || item.id || item.inventoryItemId;
-          if (!pid) continue;
-
-          const product = await tx.products.findFirst({
-            where: { 
-              tenant_id: tenantId, 
-              OR: [{ id: pid }, { linked_inventory_item_id: pid }] 
-            }
-          });
-
-          if (product) {
-            const invId = product.linked_inventory_item_id;
-            if (invId) {
-              await tx.inventory_items.update({ 
-                where: { id: invId }, 
-                data: { quantity: { decrement: item.quantity } } 
-              });
-            }
-
-            await tx.order_items.create({
-              data: {
-                tenant_id: tenantId,
-                order_id: order.id,
-                product_id: product.id,
-                inventory_item_id: invId || null,
-                quantity: item.quantity,
-                product_name: product.name,
-                product_price: Number(product.price || 0),
-                product_type: product.type || 'KITCHEN',
-                status: 'PENDING',
-              } as any,
-            });
-          }
-        }
-        return order;
-      });
-    } catch (error: any) {
+      console.error('🚨 Erro Crítico PDV:', error.message);
       throw new BadRequestException(error.message);
     }
   }
 
   // ==========================================
-  // PAYMENT / FINANCEIRO
+  // OUTRAS FUNÇÕES (Sincronizadas)
   // ==========================================
-  async processPayment(tenantId: string, data: any) {
-    const { p_order_id } = data;
-    try {
-      await this.prisma.orders.update({
-        where: { id: p_order_id },
-        data: { is_paid: true, status: 'COMPLETED' },
+  async placeOrder(tenantId: string, data: any) {
+    const { tableId, type, items, deliveryInfo } = data;
+    return await this.prisma.$transaction(async (tx) => {
+      const order = await tx.orders.create({
+        data: { tenant_id: tenantId, table_id: tableId || null, order_type: type || 'DINE_IN', status: 'PENDING', is_paid: false, delivery_info: deliveryInfo || null },
       });
-      return { success: true };
-    } catch (error) {
-      throw new BadRequestException('Erro ao processar pagamento.');
-    }
+      for (const item of items) {
+        const pid = item.productId || item.id || item.inventoryItemId;
+        if (!pid) continue;
+        const product = await tx.products.findFirst({ where: { tenant_id: tenantId, OR: [{ id: pid }, { linked_inventory_item_id: pid }] } });
+        if (product) {
+          const invId = product.linked_inventory_item_id;
+          if (invId) await tx.inventory_items.update({ where: { id: invId }, data: { quantity: { decrement: item.quantity } } });
+          await tx.order_items.create({
+            data: { tenant_id: tenantId, order_id: order.id, product_id: product.id, quantity: item.quantity, product_name: product.name, product_price: Number(product.price || 0), product_type: product.type || 'KITCHEN', status: 'PENDING' } as any
+          });
+        }
+      }
+      return order;
+    });
   }
 
-  // ==========================================
-  // CANCELAMENTO (Devolve stock ao inventário)
-  // ==========================================
+  async processPayment(tenantId: string, data: any) {
+    const { p_order_id } = data;
+    await this.prisma.orders.update({ where: { id: p_order_id }, data: { is_paid: true, status: 'COMPLETED' } });
+    return { success: true };
+  }
+
   async cancelOrder(tenantId: string, orderId: string) {
     try {
       return await this.prisma.$transaction(async (tx) => {
-        const items = await tx.order_items.findMany({
-          where: { order_id: orderId, tenant_id: tenantId },
-        });
-
+        const items = await tx.order_items.findMany({ where: { order_id: orderId, tenant_id: tenantId } });
         for (const item of items) {
-          if (item.inventory_item_id) {
-            await tx.inventory_items.update({
-              where: { id: item.inventory_item_id },
-              data: { quantity: { increment: item.quantity } },
-            });
-          }
+          if (item.inventory_item_id) await tx.inventory_items.update({ where: { id: item.inventory_item_id }, data: { quantity: { increment: item.quantity } } });
         }
-
-        await tx.orders.update({
-          where: { id: orderId },
-          data: { status: 'CANCELLED' },
-        });
-
+        await tx.orders.update({ where: { id: orderId }, data: { status: 'CANCELLED' } });
         return { success: true };
       });
-    } catch (error: any) {
-      throw new BadRequestException('Erro ao cancelar pedido.');
-    }
+    } catch (error: any) { throw new BadRequestException('Erro ao cancelar pedido.'); }
   }
 
-  // ==========================================
-  // STATUS E DISPATCH
-  // ==========================================
   async dispatchOrder(tenantId: string, orderId: string, courierInfo: any) {
-    await this.prisma.orders.updateMany({
-      where: { id: orderId, tenant_id: tenantId },
-      data: { 
-        status: 'DISPATCHED', 
-        delivery_info: courierInfo || null 
-      },
-    });
+    await this.prisma.orders.updateMany({ where: { id: orderId, tenant_id: tenantId }, data: { status: 'DISPATCHED', delivery_info: courierInfo || null } });
     return { success: true };
   }
 
   async updateItemStatus(tenantId: string, itemId: string, status: string) {
-    await this.prisma.order_items.update({
-      where: { id: itemId },
-      data: { status },
-    });
+    await this.prisma.order_items.update({ where: { id: itemId }, data: { status } });
     return { success: true };
   }
 }
