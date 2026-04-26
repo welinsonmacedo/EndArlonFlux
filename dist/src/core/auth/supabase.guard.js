@@ -54,7 +54,7 @@ let SupabaseGuard = class SupabaseGuard {
             const secret = process.env.SUPABASE_JWT_SECRET;
             const espiao = jwt.decode(token, { complete: true });
             console.log('🕵️ CABEÇALHO DO TOKEN:', espiao?.header);
-            const decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
+            const decoded = jwt.verify(token, secret, { algorithms: ['HS256', 'ES256'] });
             request.user = decoded;
             return true;
         }

@@ -21,7 +21,7 @@ export class SupabaseGuard implements CanActivate {
       console.log('🕵️ CABEÇALHO DO TOKEN:', espiao?.header);
       
       // 👇 A validação com a regra estrita
-      const decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
+      const decoded = jwt.verify(token, secret, { algorithms: ['HS256', 'ES256'] });
       
       request.user = decoded; 
       return true;
