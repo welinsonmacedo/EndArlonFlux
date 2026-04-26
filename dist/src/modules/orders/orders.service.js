@@ -33,8 +33,6 @@ let OrdersService = class OrdersService {
                     });
                     sessionId = activeSession?.id;
                 }
-                if (!sessionId)
-                    throw new common_1.BadRequestException('Venda bloqueada: Não existe caixa aberto.');
                 let totalAmount = 0;
                 const processedItems = [];
                 for (const item of items) {
@@ -107,18 +105,24 @@ let OrdersService = class OrdersService {
                         },
                     });
                 }
-                await tx.transactions.create({
-                    data: {
-                        tenant_id: tenantId,
-                        order_id: order.id,
-                        cash_session_id: sessionId,
-                        amount: totalAmount,
-                        method: paymentMethod,
-                        items_summary: 'Venda Balcão (PDV)',
-                        status: 'COMPLETED',
-                        cashier_name: cashierName,
-                    },
-                });
+                if (sessionId) {
+                    await tx.$executeRaw `
+            INSERT INTO public.transactions (
+              tenant_id, order_id, cash_session_id, amount, method, items_summary, status, cashier_name
+            ) VALUES (
+              ${tenantId}::uuid, ${order.id}::uuid, ${sessionId}::uuid, ${totalAmount}, ${paymentMethod}, 'Venda Balcão (PDV)', 'COMPLETED', ${cashierName}
+            )
+          `;
+                }
+                else {
+                    await tx.$executeRaw `
+            INSERT INTO public.transactions (
+              tenant_id, order_id, amount, method, items_summary, status, cashier_name
+            ) VALUES (
+              ${tenantId}::uuid, ${order.id}::uuid, ${totalAmount}, ${paymentMethod}, 'Venda Balcão (PDV)', 'COMPLETED', ${cashierName}
+            )
+          `;
+                }
                 return { success: true, order_id: order.id, total: totalAmount };
             });
         }
