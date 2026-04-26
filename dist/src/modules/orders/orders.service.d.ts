@@ -5,6 +5,7 @@ export declare class OrdersService {
     processPosSale(tenantId: string, data: any): Promise<{
         success: boolean;
         order_id: string;
+        total: number;
     }>;
     placeOrder(tenantId: string, data: any): Promise<{
         id: string;
