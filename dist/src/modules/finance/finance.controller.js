@@ -20,23 +20,47 @@ let FinanceController = class FinanceController {
     constructor(financeService) {
         this.financeService = financeService;
     }
+    extractIds(req, body) {
+        const tenantId = body?.tenantId || req.query?.tenantId || req.headers['x-tenant-id'] || req.user?.user_metadata?.tenant_id;
+        const authUserId = req.user?.id;
+        if (!tenantId)
+            throw new common_1.BadRequestException('tenantId ausente.');
+        return { tenantId, authUserId };
+    }
     async open(req, data) {
-        return this.financeService.openSession(req.user.tenantId, req.user.id, data);
+        const { tenantId, authUserId } = this.extractIds(req, data);
+        return this.financeService.openSession(tenantId, authUserId, data);
     }
     async close(req, id, data) {
-        return this.financeService.closeSession(req.user.tenantId, req.user.id, id, data);
+        const { tenantId, authUserId } = this.extractIds(req, data);
+        return this.financeService.closeSession(tenantId, authUserId, id, data);
     }
     async movement(req, data) {
-        return this.financeService.registerMovement(req.user.tenantId, req.user.id, data);
+        const { tenantId, authUserId } = this.extractIds(req, data);
+        return this.financeService.registerMovement(tenantId, authUserId, data);
     }
     async createExpense(req, data) {
-        return this.financeService.createExpense(req.user.tenantId, req.user.id, data);
+        const { tenantId, authUserId } = this.extractIds(req, data);
+        return this.financeService.createExpense(tenantId, authUserId, data);
+    }
+    async updateExpense(req, id, data) {
+        const { tenantId, authUserId } = this.extractIds(req, data);
+        return this.financeService.updateExpense(tenantId, authUserId, id, data);
     }
     async pay(req, id, data) {
-        return this.financeService.payExpense(req.user.tenantId, req.user.id, id, data);
+        const { tenantId, authUserId } = this.extractIds(req, data);
+        return this.financeService.payExpense(tenantId, authUserId, id, data);
     }
-    async getSummary(req, start, end) {
-        return this.financeService.getDashboardSummary(req.user.tenantId, new Date(start), new Date(end));
+    async deleteExpense(req, id, data) {
+        const { tenantId, authUserId } = this.extractIds(req, data);
+        return this.financeService.deleteExpense(tenantId, authUserId, id, data);
+    }
+    async voidTransaction(req, id, data) {
+        const { tenantId, authUserId } = this.extractIds(req, data);
+        return this.financeService.voidTransaction(tenantId, authUserId, id, data);
+    }
+    async getSummary(req, start, end, tId) {
+        return this.financeService.getDashboardSummary(tId, new Date(start), new Date(end));
     }
 };
 exports.FinanceController = FinanceController;
@@ -74,6 +98,15 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], FinanceController.prototype, "createExpense", null);
 __decorate([
+    (0, common_1.Patch)('expenses/:id'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, Object]),
+    __metadata("design:returntype", Promise)
+], FinanceController.prototype, "updateExpense", null);
+__decorate([
     (0, common_1.Patch)('expenses/:id/pay'),
     __param(0, (0, common_1.Req)()),
     __param(1, (0, common_1.Param)('id')),
@@ -83,12 +116,31 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], FinanceController.prototype, "pay", null);
 __decorate([
+    (0, common_1.Delete)('expenses/:id'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, Object]),
+    __metadata("design:returntype", Promise)
+], FinanceController.prototype, "deleteExpense", null);
+__decorate([
+    (0, common_1.Post)('transactions/:id/cancel'),
+    __param(0, (0, common_1.Req)()),
+    __param(1, (0, common_1.Param)('id')),
+    __param(2, (0, common_1.Body)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, Object]),
+    __metadata("design:returntype", Promise)
+], FinanceController.prototype, "voidTransaction", null);
+__decorate([
     (0, common_1.Get)('summary'),
     __param(0, (0, common_1.Req)()),
     __param(1, (0, common_1.Query)('start')),
     __param(2, (0, common_1.Query)('end')),
+    __param(3, (0, common_1.Query)('tenantId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, String, String]),
+    __metadata("design:paramtypes", [Object, String, String, String]),
     __metadata("design:returntype", Promise)
 ], FinanceController.prototype, "getSummary", null);
 exports.FinanceController = FinanceController = __decorate([

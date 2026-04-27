@@ -22,13 +22,13 @@ let FinanceService = class FinanceService {
                 where: { tenant_id: tenantId, status: 'OPEN' }
             });
             if (active)
-                throw new common_1.BadRequestException('Já existe um caixa aberto.');
+                throw new common_1.BadRequestException('Já existe um caixa aberto para este restaurante.');
             return await tx.cash_sessions.create({
                 data: {
                     tenant_id: tenantId,
-                    initial_amount: data.initialAmount,
+                    initial_amount: data.initialAmount || 0,
                     operator_name: data.operatorName,
-                    notes: data.notes,
+                    notes: data.notes || '',
                     status: 'OPEN',
                     opened_at: new Date()
                 }
@@ -76,8 +76,28 @@ let FinanceService = class FinanceService {
                     category: data.category || 'Geral',
                     due_date: new Date(data.dueDate),
                     is_paid: data.isPaid || false,
-                    supplier_id: data.supplierId,
-                    payment_method: data.paymentMethod
+                    supplier_id: data.supplierId || null,
+                    payment_method: data.payment_method || data.paymentMethod || null,
+                    is_recurring: data.isRecurring || false,
+                }
+            });
+        });
+    }
+    async updateExpense(tenantId, authUserId, expenseId, data) {
+        return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+            const expense = await tx.expenses.findUnique({ where: { id: expenseId } });
+            if (!expense)
+                throw new common_1.NotFoundException('Despesa não localizada.');
+            return await tx.expenses.update({
+                where: { id: expenseId },
+                data: {
+                    description: data.description,
+                    amount: data.amount,
+                    category: data.category,
+                    due_date: new Date(data.dueDate),
+                    is_paid: data.isPaid,
+                    supplier_id: data.supplierId || null,
+                    payment_method: data.paymentMethod || null,
                 }
             });
         });
@@ -89,7 +109,11 @@ let FinanceService = class FinanceService {
                 throw new common_1.NotFoundException('Despesa não encontrada.');
             const updated = await tx.expenses.update({
                 where: { id: expenseId },
-                data: { is_paid: true, paid_date: new Date(), payment_method: data.paymentMethod }
+                data: {
+                    is_paid: true,
+                    paid_date: new Date(),
+                    payment_method: data.paymentMethod
+                }
             });
             if (data.paymentMethod === 'DINHEIRO' && data.sessionId) {
                 await tx.cash_movements.create({
@@ -106,9 +130,41 @@ let FinanceService = class FinanceService {
             return updated;
         });
     }
+    async deleteExpense(tenantId, authUserId, expenseId, data) {
+        return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+            const staff = await tx.staff.findFirst({
+                where: { tenant_id: tenantId, pin: data.adminPin }
+            });
+            if (!staff)
+                throw new common_1.BadRequestException('PIN de administrador inválido.');
+            await tx.expenses.delete({ where: { id: expenseId } });
+            return { success: true };
+        });
+    }
+    async voidTransaction(tenantId, authUserId, transactionId, data) {
+        return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+            const staff = await tx.staff.findFirst({
+                where: { tenant_id: tenantId, pin: data.adminPin }
+            });
+            if (!staff)
+                throw new common_1.BadRequestException('PIN de administrador inválido.');
+            const transaction = await tx.transactions.findUnique({ where: { id: transactionId } });
+            if (!transaction)
+                throw new common_1.NotFoundException('Transação não encontrada.');
+            await tx.transactions.update({
+                where: { id: transactionId },
+                data: { status: 'CANCELLED' }
+            });
+            return { success: true };
+        });
+    }
     async calculateSessionTotals(tx, sessionId) {
-        const transactions = await tx.transactions.findMany({ where: { cash_session_id: sessionId } });
-        const movements = await tx.cash_movements.findMany({ where: { session_id: sessionId } });
+        const transactions = await tx.transactions.findMany({
+            where: { cash_session_id: sessionId, status: 'COMPLETED' }
+        });
+        const movements = await tx.cash_movements.findMany({
+            where: { session_id: sessionId }
+        });
         const salesCash = transactions
             .filter((t) => t.method === 'DINHEIRO')
             .reduce((acc, t) => acc + Number(t.amount), 0);

@@ -2,6 +2,7 @@ import { FinanceService } from './finance.service';
 export declare class FinanceController {
     private readonly financeService;
     constructor(financeService: FinanceService);
+    private extractIds;
     open(req: any, data: any): Promise<{
         id: string;
         status: string | null;
@@ -48,6 +49,20 @@ export declare class FinanceController {
         is_recurring: boolean;
         payment_method: string | null;
     }>;
+    updateExpense(req: any, id: string, data: any): Promise<{
+        id: string;
+        is_paid: boolean | null;
+        created_at: Date | null;
+        tenant_id: string;
+        description: string;
+        category: string | null;
+        supplier_id: string | null;
+        amount: import("@prisma/client-runtime-utils").Decimal;
+        due_date: Date;
+        paid_date: Date | null;
+        is_recurring: boolean;
+        payment_method: string | null;
+    }>;
     pay(req: any, id: string, data: any): Promise<{
         id: string;
         is_paid: boolean | null;
@@ -62,7 +77,13 @@ export declare class FinanceController {
         is_recurring: boolean;
         payment_method: string | null;
     }>;
-    getSummary(req: any, start: string, end: string): Promise<{
+    deleteExpense(req: any, id: string, data: any): Promise<{
+        success: boolean;
+    }>;
+    voidTransaction(req: any, id: string, data: any): Promise<{
+        success: boolean;
+    }>;
+    getSummary(req: any, start: string, end: string, tId: string): Promise<{
         totalRevenue: number | import("@prisma/client-runtime-utils").Decimal;
         totalExpenses: number | import("@prisma/client-runtime-utils").Decimal;
         netProfit: number;

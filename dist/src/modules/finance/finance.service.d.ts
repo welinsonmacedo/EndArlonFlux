@@ -61,6 +61,20 @@ export declare class FinanceService {
         is_recurring: boolean;
         payment_method: string | null;
     }>;
+    updateExpense(tenantId: string, authUserId: string, expenseId: string, data: any): Promise<{
+        id: string;
+        is_paid: boolean | null;
+        created_at: Date | null;
+        tenant_id: string;
+        description: string;
+        category: string | null;
+        supplier_id: string | null;
+        amount: import("@prisma/client-runtime-utils").Decimal;
+        due_date: Date;
+        paid_date: Date | null;
+        is_recurring: boolean;
+        payment_method: string | null;
+    }>;
     payExpense(tenantId: string, authUserId: string, expenseId: string, data: {
         paymentMethod: string;
         sessionId?: string;
@@ -77,6 +91,17 @@ export declare class FinanceService {
         paid_date: Date | null;
         is_recurring: boolean;
         payment_method: string | null;
+    }>;
+    deleteExpense(tenantId: string, authUserId: string, expenseId: string, data: {
+        adminPin: string;
+    }): Promise<{
+        success: boolean;
+    }>;
+    voidTransaction(tenantId: string, authUserId: string, transactionId: string, data: {
+        adminPin: string;
+        userName: string;
+    }): Promise<{
+        success: boolean;
     }>;
     private calculateSessionTotals;
     getDashboardSummary(tenantId: string, startDate: Date, endDate: Date): Promise<{

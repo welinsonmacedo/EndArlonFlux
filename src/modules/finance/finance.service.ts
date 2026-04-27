@@ -1,4 +1,3 @@
-// src/modules/finance/finance.service.ts
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../core/prisma/prisma.service';
 
@@ -16,17 +15,17 @@ export class FinanceService {
         where: { tenant_id: tenantId, status: 'OPEN' }
       });
 
-      if (active) throw new BadRequestException('Já existe um caixa aberto.');
+      if (active) throw new BadRequestException('Já existe um caixa aberto para este restaurante.');
 
       return await tx.cash_sessions.create({
         data: {
           tenant_id: tenantId,
-          initial_amount: data.initialAmount,
+          initial_amount: data.initialAmount || 0,
           operator_name: data.operatorName,
-          notes: data.notes,
+          notes: data.notes || '',
           status: 'OPEN',
           opened_at: new Date()
-        }
+        } as any
       });
     });
   }
@@ -36,7 +35,6 @@ export class FinanceService {
       const session = await tx.cash_sessions.findUnique({ where: { id: sessionId } });
       if (!session || session.status === 'CLOSED') throw new NotFoundException('Sessão inválida ou já fechada.');
 
-      // Calcula o esperado baseado nas transações e movimentos
       const totals = await this.calculateSessionTotals(tx, sessionId);
 
       return await tx.cash_sessions.update({
@@ -46,7 +44,7 @@ export class FinanceService {
           status: 'CLOSED',
           closed_at: new Date(),
           notes: `${data.notes || ''} | Esperado em Dinheiro: ${totals.cashExpected}`
-        }
+        } as any
       });
     });
   }
@@ -57,11 +55,11 @@ export class FinanceService {
         data: {
           tenant_id: tenantId,
           session_id: data.sessionId,
-          type: data.type, // 'IN' para suprimento, 'OUT' para sangria
+          type: data.type,
           amount: data.amount,
           reason: data.reason,
           user_name: data.userName
-        }
+        } as any
       });
     });
   }
@@ -80,9 +78,30 @@ export class FinanceService {
           category: data.category || 'Geral',
           due_date: new Date(data.dueDate),
           is_paid: data.isPaid || false,
-          supplier_id: data.supplierId,
-          payment_method: data.paymentMethod
-        }
+          supplier_id: data.supplierId || null,
+          payment_method: data.payment_method || data.paymentMethod || null,
+          is_recurring: data.isRecurring || false,
+        } as any
+      });
+    });
+  }
+
+  async updateExpense(tenantId: string, authUserId: string, expenseId: string, data: any) {
+    return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+      const expense = await tx.expenses.findUnique({ where: { id: expenseId } });
+      if (!expense) throw new NotFoundException('Despesa não localizada.');
+
+      return await tx.expenses.update({
+        where: { id: expenseId },
+        data: {
+          description: data.description,
+          amount: data.amount,
+          category: data.category,
+          due_date: new Date(data.dueDate),
+          is_paid: data.isPaid,
+          supplier_id: data.supplierId || null,
+          payment_method: data.paymentMethod || null,
+        } as any
       });
     });
   }
@@ -94,10 +113,14 @@ export class FinanceService {
 
       const updated = await tx.expenses.update({
         where: { id: expenseId },
-        data: { is_paid: true, paid_date: new Date(), payment_method: data.paymentMethod }
+        data: { 
+          is_paid: true, 
+          paid_date: new Date(), 
+          payment_method: data.paymentMethod 
+        } as any
       });
 
-      // Se pago em dinheiro e houver um caixa aberto, registra a sangria automática
+      // Se for pago em dinheiro e houver caixa, faz a sangria automática
       if (data.paymentMethod === 'DINHEIRO' && data.sessionId) {
         await tx.cash_movements.create({
           data: {
@@ -107,7 +130,7 @@ export class FinanceService {
             amount: expense.amount,
             reason: `Pagamento Despesa: ${expense.description}`,
             user_name: 'Sistema'
-          }
+          } as any
         });
       }
 
@@ -115,13 +138,52 @@ export class FinanceService {
     });
   }
 
+  async deleteExpense(tenantId: string, authUserId: string, expenseId: string, data: { adminPin: string }) {
+    return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+      const staff = await tx.staff.findFirst({
+        where: { tenant_id: tenantId, pin: data.adminPin }
+      });
+      if (!staff) throw new BadRequestException('PIN de administrador inválido.');
+
+      await tx.expenses.delete({ where: { id: expenseId } });
+      return { success: true };
+    });
+  }
+
   // ==========================================
-  // UTILITÁRIOS E RELATÓRIOS
+  // CANCELAMENTO DE TRANSAÇÕES
+  // ==========================================
+
+  async voidTransaction(tenantId: string, authUserId: string, transactionId: string, data: { adminPin: string; userName: string }) {
+    return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+      const staff = await tx.staff.findFirst({
+        where: { tenant_id: tenantId, pin: data.adminPin }
+      });
+      if (!staff) throw new BadRequestException('PIN de administrador inválido.');
+
+      const transaction = await tx.transactions.findUnique({ where: { id: transactionId } });
+      if (!transaction) throw new NotFoundException('Transação não encontrada.');
+
+      await tx.transactions.update({
+        where: { id: transactionId },
+        data: { status: 'CANCELLED' } as any
+      });
+
+      return { success: true };
+    });
+  }
+
+  // ==========================================
+  // CÁLCULOS AUXILIARES
   // ==========================================
 
   private async calculateSessionTotals(tx: any, sessionId: string) {
-    const transactions = await tx.transactions.findMany({ where: { cash_session_id: sessionId } });
-    const movements = await tx.cash_movements.findMany({ where: { session_id: sessionId } });
+    const transactions = await tx.transactions.findMany({ 
+      where: { cash_session_id: sessionId, status: 'COMPLETED' } 
+    });
+    const movements = await tx.cash_movements.findMany({ 
+      where: { session_id: sessionId } 
+    });
 
     const salesCash = transactions
       .filter((t: any) => t.method === 'DINHEIRO')
