@@ -1,11 +1,13 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from './core/prisma/prisma.module';
 import { OrdersModule } from './modules/orders/orders.module';
+import { FinanceModule } from './modules/finance/finance.module';
 
 @Module({
   imports: [
     PrismaModule,
-    OrdersModule, // 👈 Se isto não estiver aqui, o NestJS ignora as suas rotas de pedidos!
+    OrdersModule,
+    FinanceModule 
   ],
 })
 export class AppModule {}

@@ -38,6 +38,17 @@ let PrismaService = class PrismaService extends client_1.PrismaClient {
             await app.close();
         });
     }
+    async $transactionWithAuth(authUserId, callback) {
+        return await this.$transaction(async (tx) => {
+            if (authUserId) {
+                await tx.$executeRawUnsafe(`
+          SELECT set_config('request.jwt.claims', '{"sub": "${authUserId}"}', true),
+                 set_config('request.jwt.claim.sub', '${authUserId}', true);
+        `);
+            }
+            return await callback(tx);
+        });
+    }
 };
 exports.PrismaService = PrismaService;
 exports.PrismaService = PrismaService = __decorate([

@@ -5,4 +5,5 @@ export declare class PrismaService extends PrismaClient implements OnModuleInit 
     constructor();
     onModuleInit(): Promise<void>;
     enableShutdownHooks(app: INestApplication): Promise<void>;
+    $transactionWithAuth<T>(authUserId: string | null, callback: (tx: Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">) => Promise<T>): Promise<T>;
 }
