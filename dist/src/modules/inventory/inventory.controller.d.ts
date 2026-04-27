@@ -1,42 +1,29 @@
-import { PrismaService } from '../../core/prisma/prisma.service';
-export declare class InventoryService {
-    private readonly prisma;
-    constructor(prisma: PrismaService);
-    createInventoryItem(tenantId: string, authUserId: string, data: any): Promise<{
+import { InventoryService } from './inventory.service';
+export declare class InventoryController {
+    private readonly inventoryService;
+    constructor(inventoryService: InventoryService);
+    private extractIds;
+    createItem(req: any, data: any): Promise<{
         success: boolean;
         id: string;
     }>;
-    updateInventoryItem(tenantId: string, authUserId: string, itemId: string, data: any): Promise<{
+    updateItem(req: any, id: string, data: any): Promise<{
         success: boolean;
     }>;
-    deleteInventoryItem(tenantId: string, authUserId: string, itemId: string): Promise<{
+    deleteItem(req: any, id: string, data: any): Promise<{
         success: boolean;
     }>;
-    adjustStock(tenantId: string, authUserId: string, data: {
-        itemId: string;
-        type: 'IN' | 'OUT';
-        quantity: number;
-        reason: string;
-        userName: string;
-    }): Promise<{
+    adjustStock(req: any, data: any): Promise<{
         success: boolean;
     }>;
-    processInventoryAdjustment(tenantId: string, authUserId: string, data: {
-        adjustments: {
-            itemId: string;
-            realQty: number;
-        }[];
-        userName: string;
-    }): Promise<{
+    processAdjustments(req: any, data: any): Promise<{
         success: boolean;
     }>;
-    processPurchase(tenantId: string, authUserId: string, data: {
-        purchaseData: any;
-    }): Promise<{
+    processPurchase(req: any, data: any): Promise<{
         success: boolean;
         purchaseOrderId: string;
     }>;
-    createSupplier(tenantId: string, authUserId: string, data: any): Promise<{
+    createSupplier(req: any, data: any): Promise<{
         success: boolean;
         supplier: {
             number: string | null;
@@ -56,7 +43,7 @@ export declare class InventoryService {
             state: string | null;
         };
     }>;
-    updateSupplier(tenantId: string, authUserId: string, id: string, data: any): Promise<{
+    updateSupplier(req: any, id: string, data: any): Promise<{
         success: boolean;
         supplier: {
             number: string | null;
@@ -76,7 +63,7 @@ export declare class InventoryService {
             state: string | null;
         };
     }>;
-    deleteSupplier(tenantId: string, authUserId: string, id: string): Promise<{
+    deleteSupplier(req: any, id: string, data: any): Promise<{
         success: boolean;
     }>;
 }

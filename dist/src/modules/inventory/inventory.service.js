@@ -9,135 +9,260 @@ var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FinanceService = void 0;
+exports.InventoryService = void 0;
 const common_1 = require("@nestjs/common");
 const prisma_service_1 = require("../../core/prisma/prisma.service");
-let FinanceService = class FinanceService {
+let InventoryService = class InventoryService {
     constructor(prisma) {
         this.prisma = prisma;
     }
-    async openSession(tenantId, authUserId, data) {
+    async createInventoryItem(tenantId, authUserId, data) {
         return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
-            const active = await tx.cash_sessions.findFirst({
-                where: { tenant_id: tenantId, status: 'OPEN' }
-            });
-            if (active)
-                throw new common_1.BadRequestException('Já existe um caixa aberto.');
-            return await tx.cash_sessions.create({
+            const item = await tx.inventory_items.create({
                 data: {
                     tenant_id: tenantId,
-                    initial_amount: data.initialAmount,
-                    operator_name: data.operatorName,
-                    notes: data.notes,
-                    status: 'OPEN',
-                    opened_at: new Date()
+                    name: data.name,
+                    barcode: data.barcode || null,
+                    unit: data.unit || 'UN',
+                    quantity: data.quantity || 0,
+                    min_quantity: data.minQuantity || 5,
+                    cost_price: data.costPrice || 0,
+                    sale_price: data.salePrice || 0,
+                    type: data.type || 'INGREDIENT',
+                    category: data.category || null,
+                    description: data.description || null,
+                    image: data.image || null,
+                    is_extra: data.isExtra || false,
+                    target_categories: data.targetCategories || [],
                 }
             });
-        });
-    }
-    async closeSession(tenantId, authUserId, sessionId, data) {
-        return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
-            const session = await tx.cash_sessions.findUnique({ where: { id: sessionId } });
-            if (!session || session.status === 'CLOSED')
-                throw new common_1.NotFoundException('Sessão inválida ou já fechada.');
-            const totals = await this.calculateSessionTotals(tx, sessionId);
-            return await tx.cash_sessions.update({
-                where: { id: sessionId },
-                data: {
-                    final_amount: data.finalAmount,
-                    status: 'CLOSED',
-                    closed_at: new Date(),
-                    notes: `${data.notes || ''} | Esperado em Dinheiro: ${totals.cashExpected}`
+            if (data.recipe && data.recipe.length > 0) {
+                for (const r of data.recipe) {
+                    await tx.inventory_recipes.create({
+                        data: {
+                            tenant_id: tenantId,
+                            parent_item_id: item.id,
+                            ingredient_item_id: r.ingredientId,
+                            quantity: r.quantity,
+                        }
+                    });
                 }
-            });
+            }
+            return { success: true, id: item.id };
         });
     }
-    async registerMovement(tenantId, authUserId, data) {
+    async updateInventoryItem(tenantId, authUserId, itemId, data) {
         return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
-            return await tx.cash_movements.create({
+            const item = await tx.inventory_items.findUnique({ where: { id: itemId } });
+            if (!item)
+                throw new common_1.NotFoundException('Item não encontrado.');
+            await tx.inventory_items.update({
+                where: { id: itemId },
                 data: {
-                    tenant_id: tenantId,
-                    session_id: data.sessionId,
+                    name: data.name,
+                    barcode: data.barcode,
+                    unit: data.unit,
+                    min_quantity: data.minQuantity,
+                    cost_price: data.costPrice,
+                    sale_price: data.salePrice,
                     type: data.type,
-                    amount: data.amount,
-                    reason: data.reason,
-                    user_name: data.userName
+                    category: data.category,
+                    description: data.description,
+                    image: data.image,
+                    is_extra: data.isExtra,
+                    target_categories: data.targetCategories,
                 }
             });
+            if (data.recipe) {
+                await tx.inventory_recipes.deleteMany({ where: { parent_item_id: itemId } });
+                for (const r of data.recipe) {
+                    await tx.inventory_recipes.create({
+                        data: {
+                            tenant_id: tenantId,
+                            parent_item_id: itemId,
+                            ingredient_item_id: r.ingredientId,
+                            quantity: r.quantity,
+                        }
+                    });
+                }
+            }
+            return { success: true };
         });
     }
-    async createExpense(tenantId, authUserId, data) {
+    async deleteInventoryItem(tenantId, authUserId, itemId) {
         return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
-            return await tx.expenses.create({
+            await tx.inventory_items.update({
+                where: { id: itemId },
+                data: { deleted_at: new Date() }
+            });
+            await tx.products.updateMany({
+                where: { linked_inventory_item_id: itemId, is_extra: true },
+                data: { deleted_at: new Date() }
+            });
+            return { success: true };
+        });
+    }
+    async adjustStock(tenantId, authUserId, data) {
+        return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+            await tx.inventory_items.update({
+                where: { id: data.itemId },
+                data: {
+                    quantity: data.type === 'IN' ? { increment: data.quantity } : { decrement: data.quantity },
+                }
+            });
+            await tx.inventory_logs.create({
                 data: {
                     tenant_id: tenantId,
-                    description: data.description,
-                    amount: data.amount,
-                    category: data.category || 'Geral',
-                    due_date: new Date(data.dueDate),
-                    is_paid: data.isPaid || false,
-                    supplier_id: data.supplierId,
-                    payment_method: data.paymentMethod
+                    item_id: data.itemId,
+                    type: data.type,
+                    quantity: data.quantity,
+                    reason: data.reason,
+                    user_name: data.userName,
+                    user_id: authUserId !== tenantId ? authUserId : null,
                 }
             });
+            return { success: true };
         });
     }
-    async payExpense(tenantId, authUserId, expenseId, data) {
+    async processInventoryAdjustment(tenantId, authUserId, data) {
         return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
-            const expense = await tx.expenses.findUnique({ where: { id: expenseId } });
-            if (!expense)
-                throw new common_1.NotFoundException('Despesa não encontrada.');
-            const updated = await tx.expenses.update({
-                where: { id: expenseId },
-                data: { is_paid: true, paid_date: new Date(), payment_method: data.paymentMethod }
-            });
-            if (data.paymentMethod === 'DINHEIRO' && data.sessionId) {
-                await tx.cash_movements.create({
+            for (const adj of data.adjustments) {
+                const item = await tx.inventory_items.findUnique({ where: { id: adj.itemId } });
+                if (!item)
+                    continue;
+                const currentQty = Number(item.quantity || 0);
+                if (currentQty === adj.realQty)
+                    continue;
+                const diff = Math.abs(currentQty - adj.realQty);
+                const type = adj.realQty > currentQty ? 'IN' : 'OUT';
+                await tx.inventory_items.update({
+                    where: { id: adj.itemId },
+                    data: { quantity: adj.realQty }
+                });
+                await tx.inventory_logs.create({
                     data: {
                         tenant_id: tenantId,
-                        session_id: data.sessionId,
-                        type: 'OUT',
-                        amount: expense.amount,
-                        reason: `Pagamento Despesa: ${expense.description}`,
-                        user_name: 'Sistema'
+                        item_id: adj.itemId,
+                        type: type,
+                        quantity: diff,
+                        reason: 'Balanço de Estoque',
+                        user_name: data.userName,
+                        user_id: authUserId !== tenantId ? authUserId : null,
                     }
                 });
             }
-            return updated;
+            return { success: true };
         });
     }
-    async calculateSessionTotals(tx, sessionId) {
-        const transactions = await tx.transactions.findMany({ where: { cash_session_id: sessionId } });
-        const movements = await tx.cash_movements.findMany({ where: { session_id: sessionId } });
-        const salesCash = transactions
-            .filter((t) => t.method === 'DINHEIRO')
-            .reduce((acc, t) => acc + Number(t.amount), 0);
-        const netMovements = movements.reduce((acc, m) => {
-            return m.type === 'IN' ? acc + Number(m.amount) : acc - Number(m.amount);
-        }, 0);
-        const session = await tx.cash_sessions.findUnique({ where: { id: sessionId } });
-        const cashExpected = Number(session.initial_amount) + salesCash + netMovements;
-        return { cashExpected };
+    async processPurchase(tenantId, authUserId, data) {
+        return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+            const pd = data.purchaseData;
+            const po = await tx.purchase_orders.create({
+                data: {
+                    tenant_id: tenantId,
+                    supplier_id: pd.supplierId || null,
+                    total_cost: pd.totalCost,
+                    status: 'COMPLETED',
+                    created_by: authUserId !== tenantId ? authUserId : null,
+                }
+            });
+            for (const item of pd.items) {
+                await tx.purchase_order_items.create({
+                    data: {
+                        tenant_id: tenantId,
+                        purchase_order_id: po.id,
+                        inventory_item_id: item.itemId,
+                        quantity: item.quantity,
+                        unit_cost: item.unitCost,
+                    }
+                });
+                await tx.inventory_items.update({
+                    where: { id: item.itemId },
+                    data: { quantity: { increment: item.quantity } }
+                });
+                await tx.inventory_logs.create({
+                    data: {
+                        tenant_id: tenantId,
+                        item_id: item.itemId,
+                        type: 'IN',
+                        quantity: item.quantity,
+                        reason: `Compra #${po.id.substring(0, 8)}`,
+                        user_name: 'Sistema',
+                        user_id: authUserId !== tenantId ? authUserId : null,
+                    }
+                });
+            }
+            if (pd.createExpense) {
+                await tx.expenses.create({
+                    data: {
+                        tenant_id: tenantId,
+                        description: `Compra de Estoque #${po.id.substring(0, 8)}`,
+                        amount: pd.totalCost,
+                        category: 'Estoque',
+                        due_date: new Date(pd.dueDate || new Date()),
+                        is_paid: pd.isPaid || false,
+                        supplier_id: pd.supplierId || null,
+                        payment_method: pd.paymentMethod || null,
+                    }
+                });
+            }
+            return { success: true, purchaseOrderId: po.id };
+        });
     }
-    async getDashboardSummary(tenantId, startDate, endDate) {
-        const sales = await this.prisma.transactions.aggregate({
-            where: { tenant_id: tenantId, created_at: { gte: startDate, lte: endDate }, status: 'COMPLETED' },
-            _sum: { amount: true }
+    async createSupplier(tenantId, authUserId, data) {
+        return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+            const supplier = await tx.suppliers.create({
+                data: {
+                    tenant_id: tenantId,
+                    name: data.name,
+                    contact_name: data.contact_name || data.contactName,
+                    phone: data.phone,
+                    email: data.email,
+                    cnpj: data.cnpj,
+                    ie: data.ie,
+                    cep: data.cep,
+                    address: data.address,
+                    number: data.number,
+                    complement: data.complement,
+                    city: data.city,
+                    state: data.state,
+                }
+            });
+            return { success: true, supplier };
         });
-        const expenses = await this.prisma.expenses.aggregate({
-            where: { tenant_id: tenantId, due_date: { gte: startDate, lte: endDate }, is_paid: true },
-            _sum: { amount: true }
+    }
+    async updateSupplier(tenantId, authUserId, id, data) {
+        return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+            const supplier = await tx.suppliers.update({
+                where: { id },
+                data: {
+                    name: data.name,
+                    contact_name: data.contact_name || data.contactName,
+                    phone: data.phone,
+                    email: data.email,
+                    cnpj: data.cnpj,
+                    ie: data.ie,
+                    cep: data.cep,
+                    address: data.address,
+                    number: data.number,
+                    complement: data.complement,
+                    city: data.city,
+                    state: data.state,
+                }
+            });
+            return { success: true, supplier };
         });
-        return {
-            totalRevenue: sales._sum.amount || 0,
-            totalExpenses: expenses._sum.amount || 0,
-            netProfit: Number(sales._sum.amount || 0) - Number(expenses._sum.amount || 0)
-        };
+    }
+    async deleteSupplier(tenantId, authUserId, id) {
+        return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+            await tx.suppliers.delete({ where: { id } });
+            return { success: true };
+        });
     }
 };
-exports.FinanceService = FinanceService;
-exports.FinanceService = FinanceService = __decorate([
+exports.InventoryService = InventoryService;
+exports.InventoryService = InventoryService = __decorate([
     (0, common_1.Injectable)(),
     __metadata("design:paramtypes", [prisma_service_1.PrismaService])
-], FinanceService);
+], InventoryService);
 //# sourceMappingURL=inventory.service.js.map
