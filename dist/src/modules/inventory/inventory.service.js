@@ -17,39 +17,47 @@ let InventoryService = class InventoryService {
         this.prisma = prisma;
     }
     async createInventoryItem(tenantId, authUserId, data) {
-        return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
-            const item = await tx.inventory_items.create({
-                data: {
-                    tenant_id: tenantId,
-                    name: data.name,
-                    barcode: data.barcode || null,
-                    unit: data.unit || 'UN',
-                    quantity: data.quantity || 0,
-                    min_quantity: data.minQuantity || 5,
-                    cost_price: data.costPrice || 0,
-                    sale_price: data.salePrice || 0,
-                    type: data.type || 'INGREDIENT',
-                    category: data.category || null,
-                    description: data.description || null,
-                    image: data.image || null,
-                    is_extra: data.isExtra || false,
-                    target_categories: data.targetCategories || [],
-                }
-            });
-            if (data.recipe && data.recipe.length > 0) {
-                for (const r of data.recipe) {
-                    await tx.inventory_recipes.create({
-                        data: {
-                            tenant_id: tenantId,
-                            parent_item_id: item.id,
-                            ingredient_item_id: r.ingredientId,
-                            quantity: r.quantity,
+        try {
+            return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+                const item = await tx.inventory_items.create({
+                    data: {
+                        tenant_id: tenantId,
+                        name: data.name,
+                        barcode: data.barcode || null,
+                        unit: data.unit || 'UN',
+                        quantity: data.quantity || 0,
+                        min_quantity: data.minQuantity || 5,
+                        cost_price: data.costPrice || 0,
+                        sale_price: data.salePrice || 0,
+                        type: data.type || 'INGREDIENT',
+                        category: data.category || null,
+                        description: data.description || null,
+                        image: data.image || null,
+                        is_extra: data.isExtra || false,
+                        target_categories: data.targetCategories || [],
+                    }
+                });
+                if (data.recipe && Array.isArray(data.recipe) && data.recipe.length > 0) {
+                    for (const r of data.recipe) {
+                        if (r.ingredientId) {
+                            await tx.inventory_recipes.create({
+                                data: {
+                                    tenant_id: tenantId,
+                                    parent_item_id: item.id,
+                                    ingredient_item_id: r.ingredientId,
+                                    quantity: r.quantity || 1,
+                                }
+                            });
                         }
-                    });
+                    }
                 }
-            }
-            return { success: true, id: item.id };
-        });
+                return { success: true, id: item.id };
+            });
+        }
+        catch (error) {
+            console.error('🚨 ERRO AO SALVAR INVENTÁRIO:', error);
+            throw new common_1.BadRequestException(error.message || 'Erro ao criar o item de inventário.');
+        }
     }
     async updateInventoryItem(tenantId, authUserId, itemId, data) {
         return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {

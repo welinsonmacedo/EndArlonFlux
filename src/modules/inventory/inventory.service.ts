@@ -8,43 +8,53 @@ export class InventoryService {
   // ==========================================
   // INVENTORY ITEMS
   // ==========================================
-  async createInventoryItem(tenantId: string, authUserId: string, data: any) {
-    return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
-      const item = await tx.inventory_items.create({
-        data: {
-          tenant_id: tenantId,
-          name: data.name,
-          barcode: data.barcode || null,
-          unit: data.unit || 'UN',
-          quantity: data.quantity || 0,
-          min_quantity: data.minQuantity || 5,
-          cost_price: data.costPrice || 0,
-          sale_price: data.salePrice || 0,
-          type: data.type || 'INGREDIENT',
-          category: data.category || null,
-          description: data.description || null,
-          image: data.image || null,
-          is_extra: data.isExtra || false,
-          target_categories: data.targetCategories || [],
-        } as any
-      });
+ async createInventoryItem(tenantId: string, authUserId: string, data: any) {
+    try {
+      return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {
+        // 1. Cria o Item Principal
+        const item = await tx.inventory_items.create({
+          data: {
+            tenant_id: tenantId,
+            name: data.name,
+            barcode: data.barcode || null,
+            unit: data.unit || 'UN',
+            quantity: data.quantity || 0,
+            min_quantity: data.minQuantity || 5,
+            cost_price: data.costPrice || 0,
+            sale_price: data.salePrice || 0,
+            type: data.type || 'INGREDIENT',
+            category: data.category || null,
+            description: data.description || null,
+            image: data.image || null,
+            is_extra: data.isExtra || false,
+            // 🛡️ Previne undefined se o Front mandar vazio
+            target_categories: data.targetCategories || [], 
+          } as any
+        });
 
-      // Se houver receita (recipe)
-      if (data.recipe && data.recipe.length > 0) {
-        for (const r of data.recipe) {
-          await tx.inventory_recipes.create({
-            data: {
-              tenant_id: tenantId,
-              parent_item_id: item.id,
-              ingredient_item_id: r.ingredientId,
-              quantity: r.quantity,
-            } as any
-          });
+        // 2. Se houver receita (Insumos do Produto), cria as relações
+        if (data.recipe && Array.isArray(data.recipe) && data.recipe.length > 0) {
+          for (const r of data.recipe) {
+            // Proteção: só insere se vier o ID do ingrediente
+            if (r.ingredientId) {
+              await tx.inventory_recipes.create({
+                data: {
+                  tenant_id: tenantId,
+                  parent_item_id: item.id,
+                  ingredient_item_id: r.ingredientId,
+                  quantity: r.quantity || 1,
+                } as any
+              });
+            }
+          }
         }
-      }
 
-      return { success: true, id: item.id };
-    });
+        return { success: true, id: item.id };
+      });
+    } catch (error: any) {
+      console.error('🚨 ERRO AO SALVAR INVENTÁRIO:', error);
+      throw new BadRequestException(error.message || 'Erro ao criar o item de inventário.');
+    }
   }
 
   async updateInventoryItem(tenantId: string, authUserId: string, itemId: string, data: any) {
