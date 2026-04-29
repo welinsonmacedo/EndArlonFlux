@@ -8,6 +8,26 @@ export class InventoryService {
   // ==========================================
   // INVENTORY ITEMS
   // ==========================================
+
+  // A FUNÇÃO QUE FALTAVA PARA BUSCAR OS ITENS NO BANCO
+  async getInventoryItems(tenantId: string) {
+    try {
+      const items = await this.prisma.inventory_items.findMany({
+        where: {
+          tenant_id: tenantId,
+          deleted_at: null, // Só traz itens que não foram excluídos
+        },
+        orderBy: {
+          name: 'asc', // Ordena por ordem alfabética para ficar bonito na tela
+        },
+      });
+      return items;
+    } catch (error) {
+      console.error('🚨 ERRO AO BUSCAR INVENTÁRIO:', error);
+      throw new BadRequestException('Erro ao buscar itens de estoque.');
+    }
+  }
+
  async createInventoryItem(tenantId: string, authUserId: string, data: any) {
     try {
       return await this.prisma.$transactionWithAuth(authUserId, async (tx) => {

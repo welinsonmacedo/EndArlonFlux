@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Patch, Delete, Body, Param, Query, Req, UseGuards, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Delete, Body, Param, Req, UseGuards, BadRequestException } from '@nestjs/common';
 import { InventoryService } from './inventory.service';
 import { SupabaseGuard } from '../../core/auth/supabase.guard';
 
@@ -7,7 +7,7 @@ import { SupabaseGuard } from '../../core/auth/supabase.guard';
 export class InventoryController {
   constructor(private readonly inventoryService: InventoryService) {}
 
-  private extractIds(req: any, body: any) {
+  private extractIds(req: any, body?: any) {
     const tenantId = body?.tenantId || req.query?.tenantId || req.headers['x-tenant-id'] || req.user?.user_metadata?.tenant_id;
     const authUserId = req.user?.id || req.user?.sub;
     if (!tenantId) throw new BadRequestException('tenantId ausente.');
@@ -17,6 +17,15 @@ export class InventoryController {
   // ==========================
   // INVENTORY ITEMS
   // ==========================
+  
+  // A ROTA QUE FALTAVA PARA BUSCAR OS ITENS
+  @Get()
+  async getItems(@Req() req) {
+    // Passamos um objeto vazio pro body já que GET não tem body
+    const { tenantId } = this.extractIds(req, {});
+    return this.inventoryService.getInventoryItems(tenantId);
+  }
+
   @Post('items')
   async createItem(@Req() req, @Body() data: any) {
     const { tenantId, authUserId } = this.extractIds(req, data);
